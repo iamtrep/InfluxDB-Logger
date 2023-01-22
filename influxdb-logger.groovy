@@ -358,6 +358,8 @@ def handleModeEvent(evt) {
     def locationName = escapeStringForInfluxDB(location.name)
     def mode = '"' + escapeStringForInfluxDB(evt.value) + '"'
     def data = "_stMode,locationName=${locationName} mode=${mode}"
+    long eventTimestamp = evt.unixTime * 1e6 // Time is in milliseconds, needs to be in nanoseconds
+    data += " ${eventTimestamp}"
     queueToInfluxDb(data)
 }
 
@@ -579,8 +581,13 @@ def handleEvent(evt) {
         data += ",unit=${unit} value=${value}"
     }
 
+    // add event timestamp
+    long eventTimestamp = evt.unixTime * 1e6 // Time is in milliseconds, needs to be in nanoseconds
+    data += " ${eventTimestamp}"
+
     // Queue data for later write to InfluxDB
     //logger("$data", "info")
+
     queueToInfluxDb(data)
 }
 
@@ -602,6 +609,9 @@ def softPoll() {
     logger("softPoll()", "trace")
 
     logSystemProperties()
+
+    long timeNow = (new Date().time) * 1e6 // Time is in milliseconds, needs to be in nanoseconds
+
     if (!accessAllAttributes) {
         // Iterate over each attribute for each device, in each device collection in deviceAttributes:
         def devs // temp variable to hold device collection.
@@ -620,7 +630,8 @@ def softPoll() {
                                 unit: d.latestState(attr)?.unit,
                                 device: d,
                                 deviceId: d.id,
-                                displayName: d.displayName
+                                displayName: d.displayName,
+                                unixTime: timeNow
                             ])
                         }
                     }
@@ -640,7 +651,8 @@ def softPoll() {
                         unit: d.latestState(attr)?.unit,
                         device: d,
                         deviceId: d.id,
-                        displayName: d.displayName
+                        displayName: d.displayName,
+                        unixTime: timeNow
                     ])
                 }
             }
@@ -657,6 +669,7 @@ def logSystemProperties() {
     logger("logSystemProperties()", "trace")
 
     def locationName = '"' + escapeStringForInfluxDB(location.name) + '"'
+    long timeNow = (new Date().time) * 1e6 // Time is in milliseconds, needs to be in nanoseconds
 
     // Location Properties:
     if (prefLogLocationProperties) {
@@ -667,7 +680,7 @@ def logSystemProperties() {
             def srt = '"' + times.sunrise.format("HH:mm", location.timeZone) + '"'
             def sst = '"' + times.sunset.format("HH:mm", location.timeZone) + '"'
 
-            def data = "_heLocation,locationName=${locationName},latitude=${location.latitude},longitude=${location.longitude},timeZone=${tz} mode=${mode},sunriseTime=${srt},sunsetTime=${sst}"
+            def data = "_heLocation,locationName=${locationName},latitude=${location.latitude},longitude=${location.longitude},timeZone=${tz} mode=${mode},sunriseTime=${srt},sunsetTime=${sst} ${timeNow}"
             queueToInfluxDb(data)
             //log.debug("LocationData = ${data}")
         } catch (e) {
@@ -684,7 +697,7 @@ def logSystemProperties() {
                 def firmwareVersion =  '"' + escapeStringForInfluxDB(h.firmwareVersionString) + '"'
 
                 def data = "_heHub,locationName=${locationName},hubName=${hubName},hubIP=${hubIP} "
-                data += "firmwareVersion=${firmwareVersion}"
+                data += "firmwareVersion=${firmwareVersion} ${timeNow}"
                 //log.debug("HubData = ${data}")
                 queueToInfluxDb(data)
             } catch (e) {
@@ -696,8 +709,8 @@ def logSystemProperties() {
 
 def queueToInfluxDb(data) {
     // Add timestamp (influxdb does this automatically, but since we're batching writes, we need to add it
-    long timeNow = (new Date().time) * 1e6 // Time is in milliseconds, needs to be in nanoseconds
-    data += " ${timeNow}"
+    //long timeNow = (new Date().time) * 1e6 // Time is in milliseconds, needs to be in nanoseconds
+    //data += " ${timeNow}"
 
     int queueSize = 0
 
