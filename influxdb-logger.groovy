@@ -727,8 +727,8 @@ def queueToInfluxDb(data) {
         queueSize = myLoggerQueue.size()
     }
     catch (e) {
-        logger("Error 2 in queueToInfluxDb", "warning")
-        logger("${e.toString()}","warning")
+        logger("Error 2 in queueToInfluxDb", "warn")
+        logger("${e.toString()}","warn")
     }
     finally {
         myMutex.release()
@@ -758,8 +758,8 @@ def writeQueuedDataToInfluxDb() {
         myLoggerQueue.clear()
     }
     catch (e) {
-        logger("Error 2 in writeQueuedDataToInfluxDb", "warning")
-        logger("${e.toString()}","warning")
+        logger("Error 2 in writeQueuedDataToInfluxDb", "warn")
+        logger("${e.toString()}","warn")
     }
     finally {
         myMutex.release()
@@ -1027,8 +1027,8 @@ private getLoggerQueue() {
             //logger("Allocated new logger queue for app ${app.getId()}", "trace")
         }
         catch (e) {
-            logger("Error in getLoggerQueue", "warning")
-            logger("${e.toString()}","warning")
+            logger("Error in getLoggerQueue", "warn")
+            logger("${e.toString()}","warn")
         }
         finally {
             myMutex.release()
@@ -1049,14 +1049,14 @@ private releaseLoggerQueue()
         myLoggerQueue = loggerQueueMap.get(app.getId())
         if (myLoggerQueue.size()) {
             // shouldn't happen since we flushed above and there are no async inputs to queue, only async reads/flush.
-            logger("releaseLoggerQueue: queue not empty, size=${myLoggerQueue.size()}", "warning")
+            logger("releaseLoggerQueue: queue not empty, size=${myLoggerQueue.size()}", "warn")
         }
         // release queue for this app ID
         loggerQueueMap.remove(app.getId())
     }
     catch (e) {
-        logger("Error in releaseLoggerQueue", "warning")
-        logger("${e.toString()}","warning")
+        logger("Error in releaseLoggerQueue", "warn")
+        logger("${e.toString()}","warn")
     }
     finally {
         myMutex.release()
