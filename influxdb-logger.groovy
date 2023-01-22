@@ -180,7 +180,7 @@ def connectionPage() {
     dynamicPage(name: "connectionPage", title: "Connection Properties", install: false, uninstall: false) {
         section {
             input "prefDatabaseTls", "bool", title:"Use TLS?", defaultValue: false, required: true
-            input "prefDatabaseHost", "text", title: "Host", defaultValue: "192.168.1.100", required: true
+            input "prefDatabaseHost", "text", title: "Host", defaultValue: "0", required: true
             input "prefDatabasePort", "text", title : "Port", defaultValue : prefDatabaseTls ? "443" : "8086", required : false
             input(
                 name: "prefInfluxVer",
@@ -744,20 +744,22 @@ def postToInfluxDB(data) {
         setupDB()
     }
 
-    logger("postToInfluxDB(): Posting data to InfluxDB: ${state.uri}, Data: [${data}]", "info")
+    if (state.databaseConnectionEnabled) {
+        logger("postToInfluxDB(): Posting data to InfluxDB: ${state.uri}, Data: [${data}]", "info")
 
-    // Hubitat Async http Post
-    try {
-        def postParams = [
-            uri: state.uri,
-            requestContentType: 'application/json',
-            contentType: 'application/json',
-            headers: state.headers,
-            body : data
-        ]
-        asynchttpPost('handleInfluxResponse', postParams)
-    } catch (e) {
-        logger("postToInfluxDB(): Something went wrong when posting: ${e}", "error")
+        // Hubitat Async http Post
+        try {
+            def postParams = [
+                uri: state.uri,
+                requestContentType: 'application/json',
+                contentType: 'application/json',
+                headers: state.headers,
+                body : data
+            ]
+            asynchttpPost('handleInfluxResponse', postParams)
+        } catch (e) {
+            logger("postToInfluxDB(): Something went wrong when posting: ${e}", "error")
+        }
     }
 }
 
@@ -786,37 +788,46 @@ private setupDB() {
     String uri
     def headers = [:]
 
-    if (settings?.prefDatabaseTls) {
-        uri = "https://"
+    if (settings.prefDatabaseHost == "0") {
+        logger("Database host not set - disabling DB connection","Warning")
+        state.databaseConnectionEnabled = false
+        state.uri = ""
+        state.headers = ""
     } else {
-        uri = "http://"
-    }
+        state.databaseConnectionEnabled = true
 
-    uri += settings.prefDatabaseHost
-    if (settings?.prefDatabasePort) {
-        uri += ":" + settings.prefDatabasePort
-    }
-
-    if (settings?.prefInfluxVer == "2") {
-        uri += "/api/v2/write?org=${settings.prefOrg}&bucket=${settings.prefBucket}"
-    } else {
-        // Influx version 1
-        uri += "/write?db=${settings.prefDatabaseName}"
-    }
-
-    if (settings.prefAuthType == null || settings.prefAuthType == "basic") {
-        if (settings.prefDatabaseUser && settings.prefDatabasePass) {
-            def userpass = "${settings.prefDatabaseUser}:${settings.prefDatabasePass}"
-            headers.put("Authorization", "Basic " + userpass.bytes.encodeBase64().toString())
+        if (settings?.prefDatabaseTls) {
+            uri = "https://"
+        } else {
+            uri = "http://"
         }
-    } else if (settings.prefAuthType == "token") {
-        headers.put("Authorization", "Token ${settings.prefDatabaseToken}")
+
+        uri += settings.prefDatabaseHost
+        if (settings?.prefDatabasePort) {
+            uri += ":" + settings.prefDatabasePort
+        }
+
+        if (settings?.prefInfluxVer == "2") {
+            uri += "/api/v2/write?org=${settings.prefOrg}&bucket=${settings.prefBucket}"
+        } else {
+            // Influx version 1
+            uri += "/write?db=${settings.prefDatabaseName}"
+        }
+
+        if (settings.prefAuthType == null || settings.prefAuthType == "basic") {
+            if (settings.prefDatabaseUser && settings.prefDatabasePass) {
+                def userpass = "${settings.prefDatabaseUser}:${settings.prefDatabasePass}"
+                headers.put("Authorization", "Basic " + userpass.bytes.encodeBase64().toString())
+            }
+        } else if (settings.prefAuthType == "token") {
+            headers.put("Authorization", "Token ${settings.prefDatabaseToken}")
+        }
+
+        state.uri = uri
+        state.headers = headers
+
+        logger("New URI: ${uri}", "info")
     }
-
-    state.uri = uri
-    state.headers = headers
-
-    logger("New URI: ${uri}", "info")
 
     // Clean up old state vars if present
     state.remove("databaseHost")
