@@ -695,7 +695,7 @@ def queueToInfluxDb(data) {
         queueSize = loggerQueue.size()
     }
     catch (e) {
-        logger("Error 2 in queueToInfluxDb", "Warning")
+        logger("Error 2 in queueToInfluxDb", "warning")
     }
     finally {
         mutex.release()
@@ -722,7 +722,7 @@ def writeQueuedDataToInfluxDb() {
         loggerQueue.clear()
     }
     catch (e) {
-        logger("Error 2 in writeQueuedDataToInfluxDb", "Warning")
+        logger("Error 2 in writeQueuedDataToInfluxDb", "warning")
     }
     finally {
         mutex.release()
@@ -791,7 +791,7 @@ private setupDB() {
     def headers = [:]
 
     if (settings.prefDatabaseHost == "0") {
-        logger("Database host not set - disabling DB connection","Warning")
+        logger("Database host not set - disabling DB connection","warning")
         state.databaseConnectionEnabled = false
         state.uri = ""
         state.headers = ""
