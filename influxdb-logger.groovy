@@ -705,7 +705,7 @@ def logSystemProperties() {
 
                 def data = "_heHub,locationName=${locationName},hubName=${hubName},hubIP=${hubIP} "
                 data += "firmwareVersion=${firmwareVersion} ${timeNow}"
-                //log.debug("HubData = ${data}")
+                //logger("HubData = ${data}","debug")
                 queueToInfluxDb(data)
             } catch (e) {
                 logger("logSystemProperties(): Unable to log Hub properties: ${e}", "error")
