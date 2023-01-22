@@ -180,7 +180,7 @@ def connectionPage() {
     dynamicPage(name: "connectionPage", title: "Connection Properties", install: false, uninstall: false) {
         section {
             input "prefDatabaseTls", "bool", title:"Use TLS?", defaultValue: false, required: true
-            input "prefDatabaseHost", "text", title: "Host", defaultValue: "0", required: true
+            input "prefDatabaseHost", "text", title: "Host IP address or hostname", defaultValue: "0", required: true
             input "prefDatabasePort", "text", title : "Port", defaultValue : prefDatabaseTls ? "443" : "8086", required : false
             input(
                 name: "prefInfluxVer",
