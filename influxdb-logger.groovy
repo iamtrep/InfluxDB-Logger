@@ -761,7 +761,7 @@ def postToInfluxDB(data) {
             logger("postToInfluxDB(): Something went wrong when posting: ${e}", "error")
         }
     } else {
-        logger("postToInfluxDB(): no database connection set, skipping", "info")
+        logger("postToInfluxDB(): no database connection set! DROPPING QUEUED DATA: [${data}]", "info")
     }
 }
 
