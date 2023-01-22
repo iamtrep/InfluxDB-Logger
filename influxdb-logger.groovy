@@ -581,13 +581,17 @@ def handleEvent(evt) {
         data += ",unit=${unit} value=${value}"
     }
 
-    // add event timestamp - create one if it is missing (for backward compat)
+    // add event timestamp
+    long dataTimestamp
     eventTimestamp = evt?.unixTime
-    if (!eventTimestamp) {
-        eventTimestamp = new Date().time
+    if (eventTimestamp) {
+        dataTimestamp = eventTimestamp
+    } else {
+        // create a data timestamp if it is missing from the event (for backward compat)
+        dataTimestamp = new Date().time
     }
-    eventTimestamp *= 1e6 // Time is in milliseconds, InfluxDB expects nanoseconds
-    data += " ${eventTimestamp}"
+    dataTimestamp *= 1e6   // Time is in milliseconds, InfluxDB expects nanoseconds
+    data += " ${dataTimestamp}"
 
     // Queue data for later write to InfluxDB
     //logger("$data", "info")
