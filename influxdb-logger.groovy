@@ -781,7 +781,9 @@ def postToInfluxDB(data) {
         setupDB()
     }
 
-    if (state.databaseConnectionEnabled) {
+    if (state.uri == "") {
+        logger("postToInfluxDB(): no database connection set! DROPPING QUEUED DATA: [${data}]", "info")
+    } else {
         logger("postToInfluxDB(): Posting data to InfluxDB: ${state.uri}, Data: [${data}]", "info")
 
         // Hubitat Async http Post
@@ -797,8 +799,6 @@ def postToInfluxDB(data) {
         } catch (e) {
             logger("postToInfluxDB(): Something went wrong when posting: ${e}", "error")
         }
-    } else {
-        logger("postToInfluxDB(): no database connection set! DROPPING QUEUED DATA: [${data}]", "info")
     }
 }
 
@@ -829,12 +829,9 @@ private setupDB() {
 
     if (settings.prefDatabaseHost == "0") {
         logger("Database host not set - disabling DB connection","warn")
-        state.databaseConnectionEnabled = false
         state.uri = ""
         state.headers = ""
     } else {
-        state.databaseConnectionEnabled = true
-
         if (settings?.prefDatabaseTls) {
             uri = "https://"
         } else {
