@@ -1049,14 +1049,14 @@ private releaseLoggerQueue()
         myLoggerQueue = loggerQueueMap.get(app.getId())
         if (myLoggerQueue.size()) {
             // shouldn't happen since we flushed above and there are no async inputs to queue, only async reads/flush.
-            logger("releaseLoggerQueue: queue not empty, size=${myLoggerQueue.size()}", "Warning")
+            logger("releaseLoggerQueue: queue not empty, size=${myLoggerQueue.size()}", "warning")
         }
         // release queue for this app ID
         loggerQueueMap.remove(app.getId())
     }
     catch (e) {
-        logger("Error in releaseLoggerQueue", "Warning")
-        logger("${e.toString()}","Warning")
+        logger("Error in releaseLoggerQueue", "warning")
+        logger("${e.toString()}","warning")
     }
     finally {
         myMutex.release()
@@ -1065,5 +1065,5 @@ private releaseLoggerQueue()
     // release mutex for this app ID
     mutexMap.remove(app.getId())
 
-    logger("released queue/mutex objects for app id ${app.getId()}", "Info")
+    logger("released queue/mutex objects for app id ${app.getId()}", "info")
 }
