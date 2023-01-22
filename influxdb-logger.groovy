@@ -371,7 +371,7 @@ def handleModeEvent(evt) {
  *   - Calculates logical binary values where string values can be
  *     represented as binary values (e.g. contact: closed = 1, open = 0)
  **/
-def handleEvent(evt) {
+def handleEvent(evt, softPolled = false) {
     //logger("handleEvent(): $evt.unit", "info")
     logger("handleEvent(): $evt.displayName($evt.name:$evt.unit) $evt.value", "info")
 
@@ -390,7 +390,7 @@ def handleEvent(evt) {
     String value = escapeStringForInfluxDB(evt.value)
     String valueBinary = ''
 
-    String data = "${measurement},deviceId=${deviceId},deviceName=${deviceName},hubName=${hubName},locationName=${locationName}"
+    String data = "${measurement},deviceId=${deviceId},deviceName=${deviceName},hubName=${hubName},locationName=${locationName},softPolled=${softPolled}"
 
     // Unit tag and fields depend on the event type:
     //  Most string-valued attributes can be translated to a binary value too.
@@ -638,7 +638,7 @@ def softPoll() {
                                 deviceId: d.id,
                                 displayName: d.displayName,
                                 unixTime: timeNow
-                            ])
+                            ], true)
                         }
                     }
                 }
@@ -660,7 +660,7 @@ def softPoll() {
                         deviceId: d.id,
                         displayName: d.displayName,
                         unixTime: timeNow
-                    ])
+                    ], true)
                 }
             }
         }
