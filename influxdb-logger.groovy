@@ -38,7 +38,7 @@
  *****************************************************************************************************************/
 
 definition(
-    name: "InfluxDB Logger",
+    name: "InfluxDB Logger PROD",
     namespace: "nowhereville",
     author: "Joshua Marker (tooluser)",
     description: "Log device states to InfluxDB",
