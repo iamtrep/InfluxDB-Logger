@@ -700,8 +700,8 @@ def queueToInfluxDb(data) {
         queueSize = myLoggerQueue.size()
     }
     catch (e) {
-        logger("Error 2 in queueToInfluxDb", "Warning")
-        logger("${e.toString()}","Warning")
+        logger("Error 2 in queueToInfluxDb", "warning")
+        logger("${e.toString()}","warning")
     }
     finally {
         myMutex.release()
@@ -731,8 +731,8 @@ def writeQueuedDataToInfluxDb() {
         myLoggerQueue.clear()
     }
     catch (e) {
-        logger("Error 2 in writeQueuedDataToInfluxDb", "Warning")
-        logger("${e.toString()}","Warning")
+        logger("Error 2 in writeQueuedDataToInfluxDb", "warning")
+        logger("${e.toString()}","warning")
     }
     finally {
         myMutex.release()
@@ -971,7 +971,7 @@ private getMutex() {
         // can happen on first app install or when new app code is saved
         mutexInstance = new java.util.concurrent.Semaphore(1)
         mutexMap.put(app.getId(), mutexInstance)
-        //logger("Allocated new mutex for app ${app.getId()}", "Trace")
+        //logger("Allocated new mutex for app ${app.getId()}", "trace")
     }
     return mutexInstance
 }
@@ -984,11 +984,11 @@ private getLoggerQueue() {
             myMutex.acquire()
             loggerQueueInstance = new java.util.concurrent.ConcurrentLinkedQueue()
             loggerQueueMap.put(app.getId(), loggerQueueInstance)
-            //logger("Allocated new logger queue for app ${app.getId()}", "Trace")
+            //logger("Allocated new logger queue for app ${app.getId()}", "trace")
         }
         catch (e) {
-            logger("Error in getLoggerQueue", "Warning")
-            logger("${e.toString()}","Warning")
+            logger("Error in getLoggerQueue", "warning")
+            logger("${e.toString()}","warning")
         }
         finally {
             myMutex.release()
