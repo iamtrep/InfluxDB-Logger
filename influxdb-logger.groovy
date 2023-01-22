@@ -828,7 +828,7 @@ private setupDB() {
     def headers = [:]
 
     if (settings.prefDatabaseHost == "0") {
-        logger("Database host not set - disabling DB connection","Warning")
+        logger("Database host not set - disabling DB connection","warning")
         state.databaseConnectionEnabled = false
         state.uri = ""
         state.headers = ""
