@@ -237,7 +237,7 @@ def getDeviceObj(id) {
     def found
     settings.allDevices.each { device ->
         if (device.getId() == id) {
-            //log.debug "Found at $device for $id with id: ${device.id}"
+            //logger("Found at $device for $id with id: ${device.id}","debug")
             found = device
         }
     }
@@ -254,7 +254,7 @@ def installed() {
     state.loggingLevelIDE = 5
     getLoggerQueue()
     updated()
-    log.debug "${app.label}: Installed with settings: ${settings}"
+    logger("${app.label}: Installed with settings: ${settings}","debug")
 }
 
 /**
@@ -689,7 +689,7 @@ def logSystemProperties() {
 
             def data = "_heLocation,locationName=${locationName},latitude=${location.latitude},longitude=${location.longitude},timeZone=${tz} mode=${mode},sunriseTime=${srt},sunsetTime=${sst} ${timeNow}"
             queueToInfluxDb(data)
-            //log.debug("LocationData = ${data}")
+            //logger("LocationData = ${data}","debug")
         } catch (e) {
             logger("logSystemProperties(): Unable to log Location properties: ${e}", "error")
         }
@@ -750,7 +750,7 @@ def writeQueuedDataToInfluxDb() {
         myMutex.acquire()
 
         if (myLoggerQueue.size() == 0) {
-            logger("No queued data to write to InfluxDB", "info")
+            logger("No queued data to write to InfluxDB", "debug")
             return
         }
         logger("Writing queued data of size ${myLoggerQueue.size()} out", "info")
