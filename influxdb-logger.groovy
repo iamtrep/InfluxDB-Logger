@@ -870,7 +870,7 @@ private manageSubscriptions() {
     unsubscribe()
 
     // Subscribe to mode events:
-    if (prefLogModeEvents) subscribe(location, "mode", handleModeEvent)
+    if (prefLogModeEvents) subscribe(location, "mode", handleModeEvent, ["filterEvents": filterEvents])
 
     if (!accessAllAttributes) {
         // Subscribe to device attributes (iterate over each attribute for each device collection in state.deviceAttributes):
