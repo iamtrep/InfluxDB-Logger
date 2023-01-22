@@ -760,6 +760,8 @@ def postToInfluxDB(data) {
         } catch (e) {
             logger("postToInfluxDB(): Something went wrong when posting: ${e}", "error")
         }
+    } else {
+        logger("postToInfluxDB(): no database connection set, skipping", "info")
     }
 }
 
