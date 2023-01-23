@@ -246,6 +246,7 @@ def getDeviceObj(id) {
 def installed() {
     state.installedAt = now()
     state.loggingLevelIDE = 5
+    state.loggerQueue = null
     getLoggerQueue()
     updated()
     log.debug "${app.label}: Installed with settings: ${settings}"
