@@ -251,6 +251,7 @@ def getDeviceObj(id) {
 def installed() {
     state.installedAt = now()
     state.loggingLevelIDE = 5
+    state.loggerQueue = null
     getLoggerQueue()
     updated()
     logger("${app.label}: Installed with settings: ${settings}","debug")
@@ -989,8 +990,18 @@ private String escapeStringForInfluxDB(String str) {
 }
 
 private getLoggerQueue() {
-    loggerQueueInstance = loggerQueueMap.getOrDefault(app.getId(), new java.util.concurrent.ConcurrentLinkedQueue())
-    return loggerQueueInstance
+    if (state.loggerQueue) {
+        // the loggerQueueMap gets re-initialized every time there is a code change, but the app's state persists.
+        // by calling getOrDefault() this way from every running app, we can ensure that the reinitialized loggerQueueMap is restored.
+        // TODO: measure perf impact of this check.
+        loggerQueueInstance = loggerQueueMap.getOrDefault(app.getId(), state.loggerQueue)
+        if (loggerQueueInstance != state.loggerQueue) {
+            logger("app instance logger queue clusterfuck","error")
+        }
+    } else {
+        state.loggerQueue = loggerQueueMap.getOrDefault(app.getId(), java.util.concurrent.ConcurrentLinkedQueue())
+    }
+    return state.loggerQueue
 }
 
 private releaseLoggerQueue()
