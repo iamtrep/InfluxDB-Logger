@@ -998,13 +998,18 @@ private java.util.concurrent.ConcurrentLinkedQueue getLoggerQueue() {
         // by calling getOrDefault() this way from every running app, we can ensure that the reinitialized loggerQueueMap is restored.
         // TODO: measure perf impact of this check.
         loggerQueueInstance = loggerQueueMap.getOrDefault(app.getId(), atomicState.loggerQueue)
-        if (loggerQueueInstance != atomicState.loggerQueue) {
+        if (loggerQueueInstance == atomicState.loggerQueue) {
+            logger("recovered loggerQueueMap across code change?","info")
+        } else {
             logger("app instance logger queue clusterfuck","error")
         }
     } else {
         // atomicState.loggerQueue is null => first call to getLoggerQueue() since app was installed()
         // use atomicState since state is not thread-safe.
         atomicState.loggerQueue = loggerQueueMap.getOrDefault(app.getId(), new java.util.concurrent.ConcurrentLinkedQueue())
+    }
+    if (!atomicState.loggerQueue) {
+        logger("app instance logger queue clusterfuck","error")
     }
     return atomicState.loggerQueue
 }
