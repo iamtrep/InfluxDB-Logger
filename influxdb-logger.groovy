@@ -49,7 +49,6 @@ definition(
 
     import groovy.transform.Field
     @Field static loggerQueueMap = new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.ConcurrentLinkedQueue>()
-    @Field static mutexMap = new java.util.concurrent.ConcurrentHashMap<String,java.util.concurrent.Semaphore>()
 
 preferences {
     page(name: "setupMain")
@@ -696,6 +695,7 @@ def queueToInfluxDb(data) {
 
     myLoggerQueue = getLoggerQueue()
     myLoggerQueue.offer(data)
+
     int queueSize = queueSize = myLoggerQueue.size()
 
     if (queueSize > (settings.prefWriteQueueLimit ?: 100)) {
@@ -707,11 +707,6 @@ def queueToInfluxDb(data) {
 def writeQueuedDataToInfluxDb() {
     myLoggerQueue = getLoggerQueue()
 
-    if (myLoggerQueue.size() == 0) {
-        logger("No queued data to write to InfluxDB", "info")
-        return
-    }
-
     logger("Preparing queued data - current queue size = ${myLoggerQueue.size()}", "info")
     String writeData = ""
     int nItems = 0
@@ -720,12 +715,21 @@ def writeQueuedDataToInfluxDb() {
         writeData += writeItem + '\n'
         writeItem = myLoggerQueue.poll()
         nItems++
-        if (nItems > 100) {
+        if (nItems > 1000) {
+            // Intention here is to detect a situation where events are produced faster than they are consumed, which
+            // would result in infinite looping.  Will test to see if this can ever happen in practice.  Note that breaking out
+            // does not solve the issue, only detects it.
+            logger("writeQueuedDataToInfluxDb(): breaking out of queue consumption loop","debug")
             break
         }
     }
-    logger("Prepared ${nItems} elements to write out, new queue size is ${myLoggerQueue.size()}", "info")
 
+    if (writeData == "") {
+        logger("No queued data to write to InfluxDB", "info")
+        return
+    }
+
+    logger("Prepared ${nItems} elements to write out, new queue size is ${myLoggerQueue.size()}", "info")
     postToInfluxDB(writeData)
 }
 
@@ -953,65 +957,15 @@ private String escapeStringForInfluxDB(String str) {
     return str
 }
 
-private getMutex() {
-    mutexInstance = mutexMap.get(app.getId())
-    if (!mutexInstance) {
-        // can happen on first app install or when new app code is saved
-        mutexInstance = new java.util.concurrent.Semaphore(1)
-        mutexMap.put(app.getId(), mutexInstance)
-        //logger("Allocated new mutex for app ${app.getId()}", "trace")
-    }
-    return mutexInstance
-}
-
 private getLoggerQueue() {
-    loggerQueueInstance = loggerQueueMap.get(app.getId())
-    if (!loggerQueueInstance) {
-        myMutex = getMutex()
-        try {
-            myMutex.acquire()
-            loggerQueueInstance = new java.util.concurrent.ConcurrentLinkedQueue()
-            loggerQueueMap.put(app.getId(), loggerQueueInstance)
-            //logger("Allocated new logger queue for app ${app.getId()}", "trace")
-        }
-        catch (e) {
-            logger("Error in getLoggerQueue", "warn")
-            logger("${e.toString()}","warn")
-        }
-        finally {
-            myMutex.release()
-        }
-    }
+    loggerQueueInstance = loggerQueueMap.getOrDefault(app.getId(), new java.util.concurrent.ConcurrentLinkedQueue())
     return loggerQueueInstance
 }
 
 private releaseLoggerQueue()
 {
-    // ensure queue is flushed
+    // improve probability of queue being flushed
     writeQueuedDataToInfluxDb()
-
-    myMutex = getMutex()
-
-    try {
-        myMutex.acquire()
-        myLoggerQueue = loggerQueueMap.get(app.getId())
-        if (myLoggerQueue.size()) {
-            // shouldn't happen since we flushed above and there are no async inputs to queue, only async reads/flush.
-            logger("releaseLoggerQueue: queue not empty, size=${myLoggerQueue.size()}", "warn")
-        }
-        // release queue for this app ID
-        loggerQueueMap.remove(app.getId())
-    }
-    catch (e) {
-        logger("Error in releaseLoggerQueue", "warn")
-        logger("${e.toString()}","warn")
-    }
-    finally {
-        myMutex.release()
-    }
-
-    // release mutex for this app ID
-    mutexMap.remove(app.getId())
-
-    logger("released queue/mutex objects for app id ${app.getId()}", "info")
+    loggerQueueMap.remove(app.getId())
+    logger("released queue for app id ${app.getId()}", "info")
 }
