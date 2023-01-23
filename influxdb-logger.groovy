@@ -694,11 +694,9 @@ def queueToInfluxDb(data) {
     long timeNow = (new Date().time) * 1e6 // Time is in milliseconds, needs to be in nanoseconds
     data += " ${timeNow}"
 
-    int queueSize = 0
-
     myLoggerQueue = getLoggerQueue()
     myLoggerQueue.offer(data)
-    queueSize = myLoggerQueue.size()
+    int queueSize = queueSize = myLoggerQueue.size()
 
     if (queueSize > (settings.prefWriteQueueLimit ?: 100)) {
         logger("Queue size is too big, triggering write now", "info")
@@ -953,7 +951,7 @@ private getMutex() {
         // can happen on first app install or when new app code is saved
         mutexInstance = new java.util.concurrent.Semaphore(1)
         mutexMap.put(app.getId(), mutexInstance)
-        //logger("Allocated new mutex for app ${app.getId()}", "Trace")
+        //logger("Allocated new mutex for app ${app.getId()}", "trace")
     }
     return mutexInstance
 }
@@ -966,7 +964,7 @@ private getLoggerQueue() {
             myMutex.acquire()
             loggerQueueInstance = new java.util.concurrent.ConcurrentLinkedQueue()
             loggerQueueMap.put(app.getId(), loggerQueueInstance)
-            //logger("Allocated new logger queue for app ${app.getId()}", "Trace")
+            //logger("Allocated new logger queue for app ${app.getId()}", "trace")
         }
         catch (e) {
             logger("Error in getLoggerQueue", "warn")
