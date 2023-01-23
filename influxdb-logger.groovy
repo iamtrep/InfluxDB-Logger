@@ -696,22 +696,9 @@ def queueToInfluxDb(data) {
 
     int queueSize = 0
 
-    myMutex = getMutex()
     myLoggerQueue = getLoggerQueue()
-
-    try {
-        myMutex.acquire()
-
-        myLoggerQueue.offer(data)
-        queueSize = myLoggerQueue.size()
-    }
-    catch (e) {
-        logger("Error 2 in queueToInfluxDb", "warn")
-        logger("${e.toString()}","warn")
-    }
-    finally {
-        myMutex.release()
-    }
+    myLoggerQueue.offer(data)
+    queueSize = myLoggerQueue.size()
 
     if (queueSize > (settings.prefWriteQueueLimit ?: 100)) {
         logger("Queue size is too big, triggering write now", "info")
@@ -722,27 +709,16 @@ def queueToInfluxDb(data) {
 def writeQueuedDataToInfluxDb() {
     String writeData = ""
 
-    myMutex = getMutex()
     myLoggerQueue = getLoggerQueue()
 
-    try {
-        myMutex.acquire()
+    if (myLoggerQueue.size() == 0) {
+        logger("No queued data to write to InfluxDB", "info")
+        return
+    }
 
-        if (myLoggerQueue.size() == 0) {
-            logger("No queued data to write to InfluxDB", "info")
-            return
-        }
-        logger("Writing queued data of size ${myLoggerQueue.size()} out", "info")
-        writeData = myLoggerQueue.toArray().join('\n')
-        myLoggerQueue.clear()
-    }
-    catch (e) {
-        logger("Error 2 in writeQueuedDataToInfluxDb", "warn")
-        logger("${e.toString()}","warn")
-    }
-    finally {
-        myMutex.release()
-    }
+    logger("Writing queued data of size ${myLoggerQueue.size()} out", "info")
+    writeData = myLoggerQueue.toArray().join('\n')
+    myLoggerQueue.clear()
 
     postToInfluxDB(writeData)
 }
