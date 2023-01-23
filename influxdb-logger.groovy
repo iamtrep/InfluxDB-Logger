@@ -958,20 +958,23 @@ private String escapeStringForInfluxDB(String str) {
     return str
 }
 
+
 private getLoggerQueue() {
     defaultQueue = new java.util.concurrent.ConcurrentLinkedQueue()
     queue = loggerQueueMap.putIfAbsent(app.getId(), defaultQueue)
     if (queue == null) {
-        // key was not in map. swap with defaultQueue
+        // key was not in map. defaultQueue was set.
         logger("allocating new queue for app","warn")
-        queue = defaultQueue
+        return defaultQueue
     }
     return queue
 }
 
+// Attempt to clean up the ConcurrentLinkedQueue object. Result not guaranteed, since other threads may call getLoggerQueue(),
+// which will recreate it.
 private releaseLoggerQueue()
 {
-    // improve probability of queue being flushed
+    // reduce probability of data loss by flushing queue just before we release it,
     writeQueuedDataToInfluxDb()
     loggerQueueMap.remove(app.getId())
     logger("released queue for app id ${app.getId()}", "info")
