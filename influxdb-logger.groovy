@@ -726,8 +726,6 @@ def queueToInfluxDb(data) {
 }
 
 def writeQueuedDataToInfluxDb() {
-    String writeData = ""
-
     myLoggerQueue = getLoggerQueue()
 
     if (myLoggerQueue.size() == 0) {
@@ -736,7 +734,7 @@ def writeQueuedDataToInfluxDb() {
     }
 
     logger("Writing queued data of size ${myLoggerQueue.size()} out", "info")
-    writeData = myLoggerQueue.toArray().join('\n')
+    String writeData = writeData = myLoggerQueue.toArray().join('\n')
     myLoggerQueue.clear()
 
     postToInfluxDB(writeData)
