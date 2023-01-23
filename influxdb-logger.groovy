@@ -48,9 +48,8 @@ definition(
     iconX3Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png")
 
     import groovy.transform.Field
-
-    @Field static java.util.concurrent.ConcurrentLinkedQueue loggerQueue = new java.util.concurrent.ConcurrentLinkedQueue()
-    @Field static java.util.concurrent.Semaphore mutex = new java.util.concurrent.Semaphore(1)
+    @Field static loggerQueueMap = new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.ConcurrentLinkedQueue>()
+    @Field static mutexMap = new java.util.concurrent.ConcurrentHashMap<String,java.util.concurrent.Semaphore>()
 
 preferences {
     page(name: "setupMain")
@@ -85,6 +84,12 @@ def setupMain() {
                 displayDuringSetup: true,
                 required: false
             )
+
+        }
+
+        section("Change Application Name"){
+            input "nameOverride", "text", title: "New Name for Application", multiple: false, required: false, submitOnChange: true, defaultValue: app.getLabel()
+            if(nameOverride != app.getLabel) app.updateLabel(nameOverride)
         }
 
         section("Polling / Write frequency:") {
@@ -242,6 +247,7 @@ def getDeviceObj(id) {
 def installed() {
     state.installedAt = now()
     state.loggingLevelIDE = 5
+    getLoggerQueue()
     updated()
     log.debug "${app.label}: Installed with settings: ${settings}"
 }
@@ -252,6 +258,7 @@ def installed() {
  *  Runs when the app is uninstalled.
  **/
 def uninstalled() {
+    releaseLoggerQueue()
     logger("uninstalled()", "trace")
 }
 
@@ -688,17 +695,22 @@ def queueToInfluxDb(data) {
     data += " ${timeNow}"
 
     int queueSize = 0
-    try {
-        mutex.acquire()
 
-        loggerQueue.offer(data)
-        queueSize = loggerQueue.size()
+    myMutex = getMutex()
+    myLoggerQueue = getLoggerQueue()
+
+    try {
+        myMutex.acquire()
+
+        myLoggerQueue.offer(data)
+        queueSize = myLoggerQueue.size()
     }
     catch (e) {
-        logger("Error 2 in queueToInfluxDb", "Warning")
+        logger("Error 2 in queueToInfluxDb", "warn")
+        logger("${e.toString()}","warn")
     }
     finally {
-        mutex.release()
+        myMutex.release()
     }
 
     if (queueSize > (settings.prefWriteQueueLimit ?: 100)) {
@@ -710,22 +722,26 @@ def queueToInfluxDb(data) {
 def writeQueuedDataToInfluxDb() {
     String writeData = ""
 
-    try {
-        mutex.acquire()
+    myMutex = getMutex()
+    myLoggerQueue = getLoggerQueue()
 
-        if (loggerQueue.size() == 0) {
+    try {
+        myMutex.acquire()
+
+        if (myLoggerQueue.size() == 0) {
             logger("No queued data to write to InfluxDB", "info")
             return
         }
-        logger("Writing queued data of size ${loggerQueue.size()} out", "info")
-        writeData = loggerQueue.toArray().join('\n')
-        loggerQueue.clear()
+        logger("Writing queued data of size ${myLoggerQueue.size()} out", "info")
+        writeData = myLoggerQueue.toArray().join('\n')
+        myLoggerQueue.clear()
     }
     catch (e) {
-        logger("Error 2 in writeQueuedDataToInfluxDb", "Warning")
+        logger("Error 2 in writeQueuedDataToInfluxDb", "warn")
+        logger("${e.toString()}","warn")
     }
     finally {
-        mutex.release()
+        myMutex.release()
     }
 
     postToInfluxDB(writeData)
@@ -953,4 +969,67 @@ private String escapeStringForInfluxDB(String str) {
         str = 'null'
     }
     return str
+}
+
+private getMutex() {
+    mutexInstance = mutexMap.get(app.getId())
+    if (!mutexInstance) {
+        // can happen on first app install or when new app code is saved
+        mutexInstance = new java.util.concurrent.Semaphore(1)
+        mutexMap.put(app.getId(), mutexInstance)
+        //logger("Allocated new mutex for app ${app.getId()}", "Trace")
+    }
+    return mutexInstance
+}
+
+private getLoggerQueue() {
+    loggerQueueInstance = loggerQueueMap.get(app.getId())
+    if (!loggerQueueInstance) {
+        myMutex = getMutex()
+        try {
+            myMutex.acquire()
+            loggerQueueInstance = new java.util.concurrent.ConcurrentLinkedQueue()
+            loggerQueueMap.put(app.getId(), loggerQueueInstance)
+            //logger("Allocated new logger queue for app ${app.getId()}", "Trace")
+        }
+        catch (e) {
+            logger("Error in getLoggerQueue", "warn")
+            logger("${e.toString()}","warn")
+        }
+        finally {
+            myMutex.release()
+        }
+    }
+    return loggerQueueInstance
+}
+
+private releaseLoggerQueue()
+{
+    // ensure queue is flushed
+    writeQueuedDataToInfluxDb()
+
+    myMutex = getMutex()
+
+    try {
+        myMutex.acquire()
+        myLoggerQueue = loggerQueueMap.get(app.getId())
+        if (myLoggerQueue.size()) {
+            // shouldn't happen since we flushed above and there are no async inputs to queue, only async reads/flush.
+            logger("releaseLoggerQueue: queue not empty, size=${myLoggerQueue.size()}", "warn")
+        }
+        // release queue for this app ID
+        loggerQueueMap.remove(app.getId())
+    }
+    catch (e) {
+        logger("Error in releaseLoggerQueue", "warn")
+        logger("${e.toString()}","warn")
+    }
+    finally {
+        myMutex.release()
+    }
+
+    // release mutex for this app ID
+    mutexMap.remove(app.getId())
+
+    logger("released queue/mutex objects for app id ${app.getId()}", "info")
 }
