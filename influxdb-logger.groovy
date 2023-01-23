@@ -958,8 +958,14 @@ private String escapeStringForInfluxDB(String str) {
 }
 
 private getLoggerQueue() {
-    loggerQueueInstance = loggerQueueMap.getOrDefault(app.getId(), new java.util.concurrent.ConcurrentLinkedQueue())
-    return loggerQueueInstance
+    defaultQueue = new java.util.concurrent.ConcurrentLinkedQueue()
+    queue = loggerQueueMap.putIfAbsent(app.getId(), defaultQueue)
+    if (queue == null) {
+        // key was not in map. swap with defaultQueue
+        logger("allocating new queue for app","warn")
+        queue = defaultQueue
+    }
+    return queue
 }
 
 private releaseLoggerQueue()
