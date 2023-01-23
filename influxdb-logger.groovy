@@ -246,8 +246,6 @@ def getDeviceObj(id) {
 def installed() {
     state.installedAt = now()
     state.loggingLevelIDE = 5
-    state.loggerQueue = null // to be removed
-    atomicState.loggerQueue = null
     getLoggerQueue()
     updated()
     log.debug "${app.label}: Installed with settings: ${settings}"
@@ -959,39 +957,15 @@ private String escapeStringForInfluxDB(String str) {
     return str
 }
 
-private java.util.concurrent.ConcurrentLinkedQueue getLoggerQueue() {
-    if (atomicstate.loggerQueue) {
-        // Ensure loggerQueueMap persistence across code saves.
-        //
-        // The loggerQueueMap gets re-initialized every time there is a code change, but the app's state persists.
-        // by calling getOrDefault() this way from every running app, we can ensure that the reinitialized loggerQueueMap is restored.
-        // TODO: measure perf impact of this check.
-        loggerQueueInstance = loggerQueueMap.getOrDefault(app.getId(), atomicState.loggerQueue)
-        if (loggerQueueInstance == atomicState.loggerQueue) {
-            logger("recovered loggerQueueMap across code change?","info")
-        } else {
-            logger("app instance logger queue clusterfuck","error")
-        }
-    } else {
-        // atomicState.loggerQueue is null => first call to getLoggerQueue() since app was installed()
-        // use atomicState since state is not thread-safe.
-        atomicState.loggerQueue = loggerQueueMap.getOrDefault(app.getId(), new java.util.concurrent.ConcurrentLinkedQueue())
-    }
-    if (!atomicState.loggerQueue) {
-        logger("app instance logger queue clusterfuck","error")
-    }
-    return atomicState.loggerQueue
+private getLoggerQueue() {
+    loggerQueueInstance = loggerQueueMap.getOrDefault(app.getId(), new java.util.concurrent.ConcurrentLinkedQueue())
+    return loggerQueueInstance
 }
 
 private releaseLoggerQueue()
 {
-    // improve probability of queue being flushed before we release it
+    // improve probability of queue being flushed
     writeQueuedDataToInfluxDb()
-
-    // Potential issue: if other threads can still be calling getLoggerQueue() at this point, we end up in a get-and-set non-threadsafe scenario
-    // But since releaseLoggerQueue() is only run when app is uninstalled, might not be a problem in practice.
-    atomicState.loggerQueue = null
     loggerQueueMap.remove(app.getId())
-
     logger("released queue for app id ${app.getId()}", "info")
 }
