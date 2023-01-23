@@ -1008,11 +1008,6 @@ private releaseLoggerQueue()
 {
     // reduce probability of data loss by flushing queue just before we release it,
     writeQueuedDataToInfluxDb()
-
-    // Potential issue: if other threads can still be calling getLoggerQueue() at this point, we end up in a get-and-set non-threadsafe scenario
-    // But since releaseLoggerQueue() is only run when app is uninstalled, might not be a problem in practice.
-    atomicState.loggerQueue = null
     loggerQueueMap.remove(app.getId())
-
     logger("released queue for app id ${app.getId()}", "info")
 }
