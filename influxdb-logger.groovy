@@ -358,9 +358,8 @@ def handleModeEvent(evt) {
 
     def locationName = escapeStringForInfluxDB(location.name)
     def mode = '"' + escapeStringForInfluxDB(evt.value) + '"'
-    def data = "_stMode,locationName=${locationName} mode=${mode}"
-    long eventTimestamp = evt.unixTime * 1e6 // Time is in milliseconds, needs to be in nanoseconds
-    data += " ${eventTimestamp}"
+    long eventTimestamp = evt.unixTime * 1e6       // Time is in milliseconds, but InfluxDB expects nanoseconds
+    def data = "_stMode,locationName=${locationName} mode=${mode} ${eventTimestamp}"
     queueToInfluxDb(data)
 }
 
@@ -583,15 +582,7 @@ def handleEvent(evt, softPolled = false) {
     }
 
     // add event timestamp
-    long dataTimestamp
-    eventTimestamp = evt?.unixTime
-    if (eventTimestamp) {
-        dataTimestamp = eventTimestamp
-    } else {
-        // create a data timestamp if it is missing from the event (for backward compat)
-        dataTimestamp = new Date().time
-    }
-    dataTimestamp *= 1e6   // Time is in milliseconds, InfluxDB expects nanoseconds
+    long eventTimestamp = evt?.unixTime * 1e6   // Time is in milliseconds, InfluxDB expects nanoseconds
     data += " ${dataTimestamp}"
 
     // Queue data for later write to InfluxDB
