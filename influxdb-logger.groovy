@@ -990,20 +990,23 @@ private String escapeStringForInfluxDB(String str) {
     return str
 }
 
+
 private getLoggerQueue() {
     defaultQueue = new java.util.concurrent.ConcurrentLinkedQueue()
     queue = loggerQueueMap.putIfAbsent(app.getId(), defaultQueue)
     if (queue == null) {
-        // key was not in map. swap with defaultQueue
+        // key was not in map. defaultQueue was set.
         logger("allocating new queue for app","warn")
-        queue = defaultQueue
+        return defaultQueue
     }
     return queue
 }
 
+// Attempt to clean up the ConcurrentLinkedQueue object. Result not guaranteed, since other threads may call getLoggerQueue(),
+// which will recreate it.
 private releaseLoggerQueue()
 {
-    // improve probability of queue being flushed before we release it
+    // reduce probability of data loss by flushing queue just before we release it,
     writeQueuedDataToInfluxDb()
 
     // Potential issue: if other threads can still be calling getLoggerQueue() at this point, we end up in a get-and-set non-threadsafe scenario
