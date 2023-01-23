@@ -999,7 +999,7 @@ private getLoggerQueue() {
             logger("app instance logger queue clusterfuck","error")
         }
     } else {
-        state.loggerQueue = loggerQueueMap.getOrDefault(app.getId(), java.util.concurrent.ConcurrentLinkedQueue())
+        state.loggerQueue = loggerQueueMap.getOrDefault(app.getId(), new java.util.concurrent.ConcurrentLinkedQueue())
     }
     return state.loggerQueue
 }
