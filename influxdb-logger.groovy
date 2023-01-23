@@ -712,7 +712,7 @@ def writeQueuedDataToInfluxDb() {
         return
     }
 
-    logger("Writing queued data of size ${myLoggerQueue.size()} out", "info")
+    logger("Preparing queued data - current queue size = ${myLoggerQueue.size()}", "info")
     String writeData = ""
     int nItems = 0
     String writeItem = myLoggerQueue.poll()
@@ -724,6 +724,7 @@ def writeQueuedDataToInfluxDb() {
             break
         }
     }
+    logger("Prepared ${nItems} elements to write out, new queue size is ${myLoggerQueue.size()}", "info")
 
     postToInfluxDB(writeData)
 }
