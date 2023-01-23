@@ -990,28 +990,15 @@ private String escapeStringForInfluxDB(String str) {
     return str
 }
 
-private java.util.concurrent.ConcurrentLinkedQueue getLoggerQueue() {
-    if (atomicstate.loggerQueue) {
-        // Ensure loggerQueueMap persistence across code saves.
-        //
-        // The loggerQueueMap gets re-initialized every time there is a code change, but the app's state persists.
-        // by calling getOrDefault() this way from every running app, we can ensure that the reinitialized loggerQueueMap is restored.
-        // TODO: measure perf impact of this check.
-        loggerQueueInstance = loggerQueueMap.getOrDefault(app.getId(), atomicState.loggerQueue)
-        if (loggerQueueInstance == atomicState.loggerQueue) {
-            logger("recovered loggerQueueMap across code change?","info")
-        } else {
-            logger("app instance logger queue clusterfuck","error")
-        }
-    } else {
-        // atomicState.loggerQueue is null => first call to getLoggerQueue() since app was installed()
-        // use atomicState since state is not thread-safe.
-        atomicState.loggerQueue = loggerQueueMap.getOrDefault(app.getId(), new java.util.concurrent.ConcurrentLinkedQueue())
+private getLoggerQueue() {
+    defaultQueue = new java.util.concurrent.ConcurrentLinkedQueue()
+    queue = loggerQueueMap.putIfAbsent(app.getId(), defaultQueue)
+    if (queue == null) {
+        // key was not in map. swap with defaultQueue
+        logger("allocating new queue for app","warn")
+        queue = defaultQueue
     }
-    if (!atomicState.loggerQueue) {
-        logger("app instance logger queue clusterfuck","error")
-    }
-    return atomicState.loggerQueue
+    return queue
 }
 
 private releaseLoggerQueue()
