@@ -959,7 +959,7 @@ private String escapeStringForInfluxDB(String str) {
     return str
 }
 
-private getLoggerQueue() {
+private java.util.concurrent.ConcurrentLinkedQueue getLoggerQueue() {
     if (atomicstate.loggerQueue) {
         // Ensure loggerQueueMap persistence across code saves.
         //
