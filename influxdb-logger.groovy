@@ -27,7 +27,7 @@
  *   2019-09-09 Caleb Morse     Support deferring writes and doing buld writes to influxdb
  *   2022-06-20 Denny Page      Remove nested sections for device selection.
  *   2023-01-08 Denny Page      Address whitespace related lint issues. No functional changes.
- *   2023-01-09 Craig           Added InfluxDb2.x support.
+ *   2023-01-09 Craig King      Added InfluxDb2.x support.
  *   2023=01-12 Denny Page      Automatic migration of Influx 1.x settings.
  *   2023-01-15 Denny Page      Clean up various things:
  *                              Remove Group ID/Name which are not supported on Hubitat.
@@ -35,6 +35,10 @@
  *                              Remove blocks of commented out code.
  *                              Don't set page sections hidden to false where hideable is false.
  *                              Remove state.queuedData.
+ *   2023=01-22 PJ              Add filterEvents option for subscribe.
+ *                              Fix event timestamps.
+ *   2023=01-23 Denny Page      Allow multiple instances of the application to be installed.
+ *                              NB: This requires Hubitat 2.2.9 or above.
  *****************************************************************************************************************/
 
 definition(
@@ -43,12 +47,12 @@ definition(
     author: "Joshua Marker (tooluser)",
     description: "Log device states to InfluxDB",
     category: "My Apps",
-    iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
-    iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
-    iconX3Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png")
-
-    import groovy.transform.Field
-    @Field static loggerQueueMap = new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.ConcurrentLinkedQueue>()
+    importUrl: "https://raw.githubusercontent.com/HubitatCommunity/InfluxDB-Logger/master/influxdb-logger.groovy",
+    iconUrl: "",
+    iconX2Url: "",
+    iconX3Url: "",
+    singleThreaded: true
+)
 
 preferences {
     page(name: "setupMain")
@@ -56,9 +60,10 @@ preferences {
 }
 
 def setupMain() {
-    dynamicPage(name: "setupMain", title: "New Settings Page", install: true, uninstall: true) {
-        section("General:") {
-            //input "prefDebugMode", "bool", title: "Enable debug logging?", defaultValue: true, displayDuringSetup: true
+    dynamicPage(name: "setupMain", title: "InfluxDB Logger Settings", install: true, uninstall: true) {
+        section("") {
+            input "appName", "text", title: "Aplication Name", multiple: false, required: false, submitOnChange: true, defaultValue: app.getLabel()
+
             href(
                 name: "href",
                 title: "Connection Settings",
@@ -101,9 +106,9 @@ def setupMain() {
         }
 
         section("System Monitoring:") {
-            input "prefLogModeEvents", "bool", title:"Log Mode Events?", defaultValue: true, required: true
-            input "prefLogHubProperties", "bool", title:"Log Hub Properties?", defaultValue: true, required: true
-            input "prefLogLocationProperties", "bool", title:"Log Location Properties?", defaultValue: true, required: true
+            input "prefLogModeEvents", "bool", title:"Log Mode Events?", defaultValue: false, required: true
+            input "prefLogHubProperties", "bool", title:"Log Hub Properties?", defaultValue: false, required: true
+            input "prefLogLocationProperties", "bool", title:"Log Location Properties?", defaultValue: false, required: true
         }
 
         section("Input Format Preference:") {
@@ -177,6 +182,10 @@ def setupMain() {
                 }
             }
         }
+
+        section("Event Subscription Options:") {
+            input "filterEvents", "bool", title:"Only log events when the value changes", defaultValue: true, required: true, submitOnChange: true
+        }
     }
 }
 
@@ -213,7 +222,7 @@ def connectionPage() {
                     "basic" : "Username / Password",
                     "token" : "Token"
                 ],
-                defaultValue: "basic",
+                defaultValue: "none",
                 submitOnChange: true,
                 required: true
             )
@@ -246,9 +255,9 @@ def getDeviceObj(id) {
 def installed() {
     state.installedAt = now()
     state.loggingLevelIDE = 5
-    getLoggerQueue()
+    state.loggerQueue = []
     updated()
-    log.debug "${app.label}: Installed with settings: ${settings}"
+    log.info "${app.label}: Installed with settings: ${settings}"
 }
 
 /**
@@ -257,8 +266,7 @@ def installed() {
  *  Runs when the app is uninstalled.
  **/
 def uninstalled() {
-    releaseLoggerQueue()
-    logger("uninstalled()", "trace")
+    log.info "${app.label}: uninstalled"
 }
 
 /**
@@ -273,6 +281,9 @@ def uninstalled() {
  **/
 def updated() {
     logger("updated()", "trace")
+
+    // Update application name
+    app.updateLabel(appName)
 
     // Update internal state:
     state.loggingLevelIDE = (settings.configLoggingLevelIDE) ? settings.configLoggingLevelIDE.toInteger() : 3
@@ -351,7 +362,8 @@ def handleModeEvent(evt) {
 
     def locationName = escapeStringForInfluxDB(location.name)
     def mode = '"' + escapeStringForInfluxDB(evt.value) + '"'
-    def data = "_stMode,locationName=${locationName} mode=${mode}"
+    long eventTimestamp = evt.unixTime * 1e6       // Time is in milliseconds, but InfluxDB expects nanoseconds
+    def data = "_stMode,locationName=${locationName} mode=${mode} ${eventTimestamp}"
     queueToInfluxDb(data)
 }
 
@@ -573,6 +585,10 @@ def handleEvent(evt) {
         data += ",unit=${unit} value=${value}"
     }
 
+    // add event timestamp
+    long eventTimestamp = evt?.unixTime * 1e6   // Time is in milliseconds, InfluxDB expects nanoseconds
+    data += " ${eventTimestamp}"
+
     // Queue data for later write to InfluxDB
     //logger("$data", "info")
     queueToInfluxDb(data)
@@ -606,15 +622,16 @@ def softPoll() {
                     da.attributes.each { attr ->
                         if (d.hasAttribute(attr) && d.latestState(attr)?.value != null) {
                             logger("softPoll(): Softpolling device ${d} for attribute: ${attr}", "info")
+                            long timeNow = new Date().time
                             // Send fake event to handleEvent():
-
                             handleEvent([
                                 name: attr,
                                 value: d.latestState(attr)?.value,
                                 unit: d.latestState(attr)?.unit,
                                 device: d,
                                 deviceId: d.id,
-                                displayName: d.displayName
+                                displayName: d.displayName,
+                                unixTime: timeNow
                             ])
                         }
                     }
@@ -627,6 +644,7 @@ def softPoll() {
             entry.value.each { attr ->
                 if (d.hasAttribute(attr) && d.latestState(attr)?.value != null) {
                     logger("softPoll(): Softpolling device ${d} for attribute: ${attr}", "info")
+                    long timeNow = new Date().time
                     // Send fake event to handleEvent():
                     handleEvent([
                         name: attr,
@@ -634,7 +652,8 @@ def softPoll() {
                         unit: d.latestState(attr)?.unit,
                         device: d,
                         deviceId: d.id,
-                        displayName: d.displayName
+                        displayName: d.displayName,
+                        unixTime: timeNow
                     ])
                 }
             }
@@ -651,6 +670,7 @@ def logSystemProperties() {
     logger("logSystemProperties()", "trace")
 
     def locationName = '"' + escapeStringForInfluxDB(location.name) + '"'
+    long timeNow = (new Date().time) * 1e6 // Time is in milliseconds, needs to be in nanoseconds when pushed to InfluxDB
 
     // Location Properties:
     if (prefLogLocationProperties) {
@@ -661,7 +681,7 @@ def logSystemProperties() {
             def srt = '"' + times.sunrise.format("HH:mm", location.timeZone) + '"'
             def sst = '"' + times.sunset.format("HH:mm", location.timeZone) + '"'
 
-            def data = "_heLocation,locationName=${locationName},latitude=${location.latitude},longitude=${location.longitude},timeZone=${tz} mode=${mode},sunriseTime=${srt},sunsetTime=${sst}"
+            def data = "_heLocation,locationName=${locationName},latitude=${location.latitude},longitude=${location.longitude},timeZone=${tz} mode=${mode},sunriseTime=${srt},sunsetTime=${sst} ${timeNow}"
             queueToInfluxDb(data)
             //log.debug("LocationData = ${data}")
         } catch (e) {
@@ -677,8 +697,7 @@ def logSystemProperties() {
                 def hubIP = '"' + escapeStringForInfluxDB(h.localIP.toString()) + '"'
                 def firmwareVersion =  '"' + escapeStringForInfluxDB(h.firmwareVersionString) + '"'
 
-                def data = "_heHub,locationName=${locationName},hubName=${hubName},hubIP=${hubIP} "
-                data += "firmwareVersion=${firmwareVersion}"
+                def data = "_heHub,locationName=${locationName},hubName=${hubName},hubIP=${hubIP} firmwareVersion=${firmwareVersion} ${timeNow}"
                 //log.debug("HubData = ${data}")
                 queueToInfluxDb(data)
             } catch (e) {
@@ -689,48 +708,37 @@ def logSystemProperties() {
 }
 
 def queueToInfluxDb(data) {
-    // Add timestamp (influxdb does this automatically, but since we're batching writes, we need to add it
-    long timeNow = (new Date().time) * 1e6 // Time is in milliseconds, needs to be in nanoseconds
-    data += " ${timeNow}"
+    loggerQueue = state.loggerQueue
+    if (loggerQueue == null) {
+        // Failsafe if coming from an old version
+        loggerQueue = []
+        state.loggerQueue = loggerQueue
+    }
 
-    myLoggerQueue = getLoggerQueue()
-    myLoggerQueue.offer(data)
-
-    int queueSize = queueSize = myLoggerQueue.size()
-
-    if (queueSize > (settings.prefWriteQueueLimit ?: 100)) {
+    loggerQueue.add(data)
+    if (loggerQueue.size() > (settings.prefWriteQueueLimit ?: 100)) {
         logger("Queue size is too big, triggering write now", "info")
         writeQueuedDataToInfluxDb()
     }
 }
 
 def writeQueuedDataToInfluxDb() {
-    myLoggerQueue = getLoggerQueue()
-
-    //logger("Preparing queued data - current queue size = ${myLoggerQueue.size()}", "trace")
-    String writeData = ""
-    int nItems = 0
-    String writeItem = myLoggerQueue.poll()
-    while (writeItem) {
-        writeData += writeItem + '\n'
-        writeItem = myLoggerQueue.poll()
-        nItems++
-        if (nItems > 1000) {
-            // Intention here is to detect a hypothetical situation where events would come in faster than they are consumed (which
-            // would result in infinite looping).  Will test to see if this can ever happen in practice.  Note that breaking out
-            // does not solve the issue, only postpones it, but allows detection.
-            logger("writeQueuedDataToInfluxDb(): breaking out of queue consumption loop","debug")
-            break
-        }
+    loggerQueue = state.loggerQueue
+    if (loggerQueue == null) {
+        // Failsafe if coming from an old version
+        return
     }
 
-    if (writeData == "") {
+    Integer size = loggerQueue.size()
+    if (size == 0) {
         logger("No queued data to write to InfluxDB", "info")
         return
     }
 
-    logger("Prepared ${nItems} elements to write out to InfluxDB", "info")
+    logger("Writing queued data of size ${size}", "info")
+    String writeData = loggerQueue.toArray().join('\n')
     postToInfluxDB(writeData)
+    loggerQueue.clear()
 }
 
 /**
@@ -883,7 +891,7 @@ private manageSubscriptions() {
                 da.attributes.each { attr ->
                     logger("manageSubscriptions(): Subscribing to attribute: ${attr}, for devices: ${da.devices}", "info")
                     // There is no need to check if all devices in the collection have the attribute.
-                    subscribe(devs, attr, handleEvent)
+                    subscribe(devs, attr, handleEvent, ["filterEvents": filterEvents])
                 }
             }
         }
@@ -892,7 +900,7 @@ private manageSubscriptions() {
             d = getDeviceObj(entry.key)
             entry.value.each { attr ->
                 logger("manageSubscriptions(): Subscribing to attribute: ${attr}, for device: ${d}", "info")
-                subscribe(d, attr, handleEvent)
+                subscribe(d, attr, handleEvent, ["filterEvents": filterEvents])
             }
         }
     }
