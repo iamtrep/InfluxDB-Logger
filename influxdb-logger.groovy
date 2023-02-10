@@ -97,7 +97,7 @@ def setupMain() {
         }
 
         section("Polling / Write frequency:") {
-            input "prefSoftPollingInterval", "number", title:"Soft-Polling interval (minutes)", defaultValue: 10, required: true
+            input "prefSoftPollingInterval", "number", title:"Device State (Soft-)Polling interval (minutes)", defaultValue: 10, required: true
 
             input "writeInterval", "enum", title:"How often to write to db (minutes)", defaultValue: "5", required: true,
                 options: ["1",  "2", "3", "4", "5", "10", "15"]
@@ -366,6 +366,8 @@ def handleModeEvent(evt) {
     def locationName = escapeStringForInfluxDB(location.name)
     def mode = '"' + escapeStringForInfluxDB(evt.value) + '"'
     long eventTimestamp = evt.unixTime * 1e6       // Time is in milliseconds, but InfluxDB expects nanoseconds
+    // TODO eventually change measurement tag to _heMode ?
+    //def data = "_stMode,locationName=${locationName} mode=${mode} ${eventTimestamp}"
     def data = "_stMode,locationName=${locationName} mode=${mode} ${eventTimestamp}"
     queueToInfluxDb(data)
 }
@@ -378,12 +380,12 @@ def handleModeEvent(evt) {
  *   - Calculates logical binary values where string values can be
  *     represented as binary values (e.g. contact: closed = 1, open = 0)
  **/
-def handleEvent(evt, softPolled = false) {
+def handleEvent(evt) {
     //logger("handleEvent(): $evt.unit", "info")
-    logger("handleEvent(): $evt.displayName($evt.name:$evt.unit) $evt.value", "info")
+    logger("handleEvent(): $evt.displayName($evt.name:$evt.unit) value=$evt.value type=$evt.type", "info")
 
     // Build data string to send to InfluxDB:
-    //  Format: <measurement>[,<tag_name>=<tag_value>] field=<field_value>
+    //  Format: <measurement>[,<tag_name>=<tag_value>] field=<field_value> timestamp
     //    If value is an integer, it must have a trailing "i"
     //    If value is a string, it must be enclosed in double quotes.
     String measurement = evt.name
@@ -392,12 +394,14 @@ def handleEvent(evt, softPolled = false) {
     String deviceName = escapeStringForInfluxDB(evt?.displayName)
     String hubName = escapeStringForInfluxDB(evt?.device?.device?.hub?.name?.toString())
     String locationName = escapeStringForInfluxDB(location.name)
+    String sampleType = escapeStringForInfluxDB(evt.type)
+
 
     String unit = escapeStringForInfluxDB(evt.unit)
     String value = escapeStringForInfluxDB(evt.value)
     String valueBinary = ''
 
-    String data = "${measurement},deviceId=${deviceId},deviceName=${deviceName},hubName=${hubName},locationName=${locationName},softPolled=${softPolled}"
+    String data = "${measurement},deviceId=${deviceId},deviceName=${deviceName},hubName=${hubName},locationName=${locationName},type=${sampleType}"
 
     // Unit tag and fields depend on the event type:
     //  Most string-valued attributes can be translated to a binary value too.
@@ -634,8 +638,9 @@ def softPoll() {
                                 device: d,
                                 deviceId: d.id,
                                 displayName: d.displayName,
+                                type: "state",
                                 unixTime: timeNow
-                            ], true)
+                            ])
                         }
                     }
                 }
@@ -656,8 +661,9 @@ def softPoll() {
                         device: d,
                         deviceId: d.id,
                         displayName: d.displayName,
+                        type: "state",
                         unixTime: timeNow
-                    ], true)
+                    ])
                 }
             }
         }
