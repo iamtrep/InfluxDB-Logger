@@ -24,17 +24,21 @@
  *   Modifcation History
  *   Date       Name            Change
  *   2019-02-02 Dan Ogorchock   Use asynchttpPost() instead of httpPost() call
- *   2019-09-09 Caleb Morse     Support deferring writes and doing buld writes to influxdb
+ *   2019-09-09 Caleb Morse     Support deferring writes and doing bulk writes to influxdb
  *   2022-06-20 Denny Page      Remove nested sections for device selection.
  *   2023-01-08 Denny Page      Address whitespace related lint issues. No functional changes.
- *   2023-01-09 Craig           Added InfluxDb2.x support.
- *   2023=01-12 Denny Page      Automatic migration of Influx 1.x settings.
+ *   2023-01-09 Craig King      Added InfluxDb2.x support.
+ *   2023-01-12 Denny Page      Automatic migration of Influx 1.x settings.
  *   2023-01-15 Denny Page      Clean up various things:
  *                              Remove Group ID/Name which are not supported on Hubitat.
  *                              Remove Location ID and Hub ID which are not supported on Hubitat (always 1).
  *                              Remove blocks of commented out code.
  *                              Don't set page sections hidden to false where hideable is false.
  *                              Remove state.queuedData.
+ *   2023-01-22 PJ              Add filterEvents option for subscribe.
+ *                              Fix event timestamps.
+ *   2023-01-23 Denny Page      Allow multiple instances of the application to be installed.
+ *                              NB: This requires Hubitat 2.2.9 or above.
  *****************************************************************************************************************/
 
 definition(
@@ -43,12 +47,12 @@ definition(
     author: "Joshua Marker (tooluser)",
     description: "Log device states to InfluxDB",
     category: "My Apps",
-    iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
-    iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
-    iconX3Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png")
-
-    import groovy.transform.Field
-    @Field static loggerQueueMap = new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.ConcurrentLinkedQueue>()
+    importUrl: "https://raw.githubusercontent.com/HubitatCommunity/InfluxDB-Logger/master/influxdb-logger.groovy",
+    iconUrl: "",
+    iconX2Url: "",
+    iconX3Url: "",
+    singleThreaded: true
+)
 
 preferences {
     page(name: "setupMain")
@@ -56,9 +60,10 @@ preferences {
 }
 
 def setupMain() {
-    dynamicPage(name: "setupMain", title: "New Settings Page", install: true, uninstall: true) {
-        section("General:") {
-            //input "prefDebugMode", "bool", title: "Enable debug logging?", defaultValue: true, displayDuringSetup: true
+    dynamicPage(name: "setupMain", title: "InfluxDB Logger Settings", install: true, uninstall: true) {
+        section("") {
+            input "appName", "text", title: "Aplication Name", multiple: false, required: false, submitOnChange: true, defaultValue: app.getLabel()
+
             href(
                 name: "href",
                 title: "Connection Settings",
@@ -97,13 +102,13 @@ def setupMain() {
             input "writeInterval", "enum", title:"How often to write to db (minutes)", defaultValue: "5", required: true,
                 options: ["1",  "2", "3", "4", "5", "10", "15"]
 
-                input "prefWriteQueueLimit", "number", title:"Write Interval Queue Size Limit", defaultValue: 50, required: true
+            input "prefWriteQueueLimit", "number", title:"Write Interval Queue Size Limit", defaultValue: 50, required: true
         }
 
         section("System Monitoring:") {
-            input "prefLogModeEvents", "bool", title:"Log Mode Events?", defaultValue: true, required: true
-            input "prefLogHubProperties", "bool", title:"Log Hub Properties?", defaultValue: true, required: true
-            input "prefLogLocationProperties", "bool", title:"Log Location Properties?", defaultValue: true, required: true
+            input "prefLogModeEvents", "bool", title:"Log Mode Events?", defaultValue: false, required: true
+            input "prefLogHubProperties", "bool", title:"Log Hub Properties?", defaultValue: false, required: true
+            input "prefLogLocationProperties", "bool", title:"Log Location Properties?", defaultValue: false, required: true
         }
 
         section("Input Format Preference:") {
@@ -181,7 +186,6 @@ def setupMain() {
         section("Event Subscription Options:") {
             input "filterEvents", "bool", title:"Only log events when the value changes", defaultValue: true, required: true, submitOnChange: true
         }
-
     }
 }
 
@@ -218,7 +222,7 @@ def connectionPage() {
                     "basic" : "Username / Password",
                     "token" : "Token"
                 ],
-                defaultValue: "basic",
+                defaultValue: "none",
                 submitOnChange: true,
                 required: true
             )
@@ -251,9 +255,7 @@ def getDeviceObj(id) {
 def installed() {
     state.installedAt = now()
     state.loggingLevelIDE = 5
-    state.loggerQueue = null // to be removed
-    atomicState.loggerQueue = null
-    getLoggerQueue()
+    state.loggerQueue = []
     updated()
     logger("${app.label}: Installed with settings: ${settings}","debug")
 }
@@ -264,8 +266,7 @@ def installed() {
  *  Runs when the app is uninstalled.
  **/
 def uninstalled() {
-    releaseLoggerQueue()
-    logger("uninstalled()", "trace")
+    logger("${app.label}: uninstalled()", "info")
 }
 
 /**
@@ -280,6 +281,9 @@ def uninstalled() {
  **/
 def updated() {
     logger("updated()", "trace")
+
+    // Update application name
+    app.updateLabel(appName)
 
     // Update internal state:
     state.loggingLevelIDE = (settings.configLoggingLevelIDE) ? settings.configLoggingLevelIDE.toInteger() : 3
@@ -587,7 +591,6 @@ def handleEvent(evt, softPolled = false) {
 
     // Queue data for later write to InfluxDB
     //logger("$data", "info")
-
     queueToInfluxDb(data)
 }
 
@@ -609,7 +612,6 @@ def softPoll() {
     logger("softPoll()", "trace")
 
     logSystemProperties()
-
     if (!accessAllAttributes) {
         // Iterate over each attribute for each device, in each device collection in deviceAttributes:
         def devs // temp variable to hold device collection.
@@ -694,9 +696,7 @@ def logSystemProperties() {
                 def hubName = '"' + escapeStringForInfluxDB(h.name.toString()) + '"'
                 def hubIP = '"' + escapeStringForInfluxDB(h.localIP.toString()) + '"'
                 def firmwareVersion =  '"' + escapeStringForInfluxDB(h.firmwareVersionString) + '"'
-
-                def data = "_heHub,locationName=${locationName},hubName=${hubName},hubIP=${hubIP} "
-                data += "firmwareVersion=${firmwareVersion} ${timeNow}"
+                def data = "_heHub,locationName=${locationName},hubName=${hubName},hubIP=${hubIP} firmwareVersion=${firmwareVersion} ${timeNow}"
                 //logger("HubData = ${data}","debug")
                 queueToInfluxDb(data)
             } catch (e) {
@@ -707,44 +707,37 @@ def logSystemProperties() {
 }
 
 def queueToInfluxDb(data) {
-    myLoggerQueue = getLoggerQueue()
-    myLoggerQueue.offer(data)
+    loggerQueue = state.loggerQueue
+    if (loggerQueue == null) {
+        // Failsafe if coming from an old version
+        loggerQueue = []
+        state.loggerQueue = loggerQueue
+    }
 
-    int queueSize = queueSize = myLoggerQueue.size()
-
-    if (queueSize > (settings.prefWriteQueueLimit ?: 100)) {
+    loggerQueue.add(data)
+    if (loggerQueue.size() > (settings.prefWriteQueueLimit ?: 100)) {
         logger("Queue size is too big, triggering write now", "info")
         writeQueuedDataToInfluxDb()
     }
 }
 
 def writeQueuedDataToInfluxDb() {
-    myLoggerQueue = getLoggerQueue()
-
-    //logger("Preparing queued data - current queue size = ${myLoggerQueue.size()}", "trace")
-    String writeData = ""
-    int nItems = 0
-    String writeItem = myLoggerQueue.poll()
-    while (writeItem) {
-        writeData += writeItem + '\n'
-        writeItem = myLoggerQueue.poll()
-        nItems++
-        if (nItems > 1000) {
-            // Intention here is to detect a situation where events are produced faster than they are consumed, which
-            // would result in infinite looping.  Will test to see if this can ever happen in practice.  Note that breaking out
-            // does not solve the issue, only detects it.
-            logger("writeQueuedDataToInfluxDb(): breaking out of queue consumption loop","debug")
-            break
-        }
+    loggerQueue = state.loggerQueue
+    if (loggerQueue == null) {
+        // Failsafe if coming from an old version
+        return
     }
 
-    if (writeData == "") {
+    Integer size = loggerQueue.size()
+    if (size == 0) {
         logger("No queued data to write to InfluxDB", "info")
         return
     }
 
-    logger("Prepared ${nItems} elements to write out to InfluxDB", "info")
+    logger("Writing queued data of size ${size}", "info")
+    String writeData = loggerQueue.toArray().join('\n')
     postToInfluxDB(writeData)
+    loggerQueue.clear()
 }
 
 /**
@@ -907,7 +900,7 @@ private manageSubscriptions() {
                 da.attributes.each { attr ->
                     logger("manageSubscriptions(): Subscribing to attribute: ${attr}, for devices: ${da.devices}", "info")
                     // There is no need to check if all devices in the collection have the attribute.
-                    subscribe(devs, attr, handleEvent, ["filterEvents": filterEvents ])
+                    subscribe(devs, attr, handleEvent, ["filterEvents": filterEvents])
                 }
             }
         }
@@ -916,7 +909,7 @@ private manageSubscriptions() {
             d = getDeviceObj(entry.key)
             entry.value.each { attr ->
                 logger("manageSubscriptions(): Subscribing to attribute: ${attr}, for device: ${d}", "info")
-                subscribe(d, attr, handleEvent, ["filterEvents": filterEvents ])
+                subscribe(d, attr, handleEvent, ["filterEvents": filterEvents])
             }
         }
     }
@@ -979,26 +972,4 @@ private String escapeStringForInfluxDB(String str) {
         str = 'null'
     }
     return str
-}
-
-
-private getLoggerQueue() {
-    defaultQueue = new java.util.concurrent.ConcurrentLinkedQueue()
-    queue = loggerQueueMap.putIfAbsent(app.getId(), defaultQueue)
-    if (queue == null) {
-        // key was not in map. defaultQueue was set.
-        logger("allocating new queue for app","warn")
-        return defaultQueue
-    }
-    return queue
-}
-
-// Attempt to clean up the ConcurrentLinkedQueue object. Result not guaranteed, since other threads may call getLoggerQueue(),
-// which will recreate it.
-private releaseLoggerQueue()
-{
-    // reduce probability of data loss by flushing queue just before we release it,
-    writeQueuedDataToInfluxDb()
-    loggerQueueMap.remove(app.getId())
-    logger("released queue for app id ${app.getId()}", "info")
 }
