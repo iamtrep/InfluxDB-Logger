@@ -792,7 +792,7 @@ def postToInfluxDB(data) {
 def handleInfluxResponse(hubResponse, data) {
     //logger("postToInfluxDB(): status of post call is: ${hubResponse.status}", "info")
     if (hubResponse.status >= 400) {
-        logger("postToInfluxDB(): Something went wrong! Response from InfluxDB: Status: ${hubResponse.status}, Headers: ${hubResponse.headers}, Data: ${data}", "error")
+        logger("postToInfluxDB(): Something went wrong! Response from InfluxDB: Status: ${hubResponse.status}, Error: ${hubResponse.errorMessage}, Headers: ${hubResponse.headers}, Data: ${data}", "error")
     }
 }
 
