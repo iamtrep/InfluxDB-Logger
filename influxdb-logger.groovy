@@ -24,20 +24,20 @@
  *   Modifcation History
  *   Date       Name            Change
  *   2019-02-02 Dan Ogorchock   Use asynchttpPost() instead of httpPost() call
- *   2019-09-09 Caleb Morse     Support deferring writes and doing bulk writes to influxdb
+ *   2019-09-09 Caleb Morse     Support deferring writes and doing buld writes to influxdb
  *   2022-06-20 Denny Page      Remove nested sections for device selection.
  *   2023-01-08 Denny Page      Address whitespace related lint issues. No functional changes.
  *   2023-01-09 Craig King      Added InfluxDb2.x support.
- *   2023-01-12 Denny Page      Automatic migration of Influx 1.x settings.
+ *   2023=01-12 Denny Page      Automatic migration of Influx 1.x settings.
  *   2023-01-15 Denny Page      Clean up various things:
  *                              Remove Group ID/Name which are not supported on Hubitat.
  *                              Remove Location ID and Hub ID which are not supported on Hubitat (always 1).
  *                              Remove blocks of commented out code.
  *                              Don't set page sections hidden to false where hideable is false.
  *                              Remove state.queuedData.
- *   2023-01-22 PJ              Add filterEvents option for subscribe.
+ *   2023=01-22 PJ              Add filterEvents option for subscribe.
  *                              Fix event timestamps.
- *   2023-01-23 Denny Page      Allow multiple instances of the application to be installed.
+ *   2023=01-23 Denny Page      Allow multiple instances of the application to be installed.
  *                              NB: This requires Hubitat 2.2.9 or above.
  *****************************************************************************************************************/
 
@@ -102,7 +102,7 @@ def setupMain() {
             input "writeInterval", "enum", title:"How often to write to db (minutes)", defaultValue: "5", required: true,
                 options: ["1",  "2", "3", "4", "5", "10", "15"]
 
-            input "prefWriteQueueLimit", "number", title:"Write Interval Queue Size Limit", defaultValue: 50, required: true
+                input "prefWriteQueueLimit", "number", title:"Write Interval Queue Size Limit", defaultValue: 50, required: true
         }
 
         section("System Monitoring:") {
@@ -963,4 +963,27 @@ private String escapeStringForInfluxDB(String str) {
         str = 'null'
     }
     return str
+}
+
+
+private getLoggerQueue() {
+    defaultQueue = new java.util.concurrent.ConcurrentLinkedQueue()
+    queue = loggerQueueMap.putIfAbsent(app.getId(), defaultQueue)
+    if (queue == null) {
+        // key was not in map - return defaultQueue
+        logger("allocating new queue for app","warn")
+        return defaultQueue
+    }
+    // key was already in map - return that.
+    return queue
+}
+
+// Attempt to clean up the ConcurrentLinkedQueue object.
+// Only called by uninstalled(), so should be safe.
+private releaseLoggerQueue()
+{
+    // Flush queue just before we release it,
+    writeQueuedDataToInfluxDb()
+    loggerQueueMap.remove(app.getId())
+    logger("released queue for app id ${app.getId()}", "info")
 }
