@@ -366,12 +366,20 @@ def updated() {
     // Configure Subscriptions:
     manageSubscriptions()
 
+    // Ensure asynchttpPost retry loop is healthy  (don't call unschedule() !! )
+    if (state.busyPosting && state.busyPostingData) {
+        // wish there was a method to check if the scheduled job is running...
+        unschedule(postToInfluxDB)
+        runIn(1, postToInfluxDB, [data:state.busyPostingData])
+    }
+
     // Flush any pending batch and set up softpoll if requested
-    unschedule()
+    unschedule(writeQueuedDataToInfluxDb)
     runIn(1, writeQueuedDataToInfluxDb)
 
     // Set up softpoll if requested
     // NB: This is called softPoll to maintain backward compatibility wirh prior versions
+    unschedule(softPoll)
     state.softPollingInterval = settings.prefSoftPollingInterval.toInteger()
     switch (state.softPollingInterval) {
         case 1:
@@ -812,15 +820,16 @@ def writeQueuedDataToInfluxDb() {
  *  Posts data to InfluxDB.
  *
  **/
-def postToInfluxDB(data) {
+def postToInfluxDB(payload) {
     if (state.uri == null) {
         // Failsafe if using an old config
         setupDB()
     }
 
-    logger("postToInfluxDB(): Posting data to InfluxDB: ${state.uri}, Data: [${data}]", "info")
+    logger("postToInfluxDB(): Posting data to InfluxDB: ${state.uri}, Data: [${payload}]", "info")
 
     state.busyPosting = true
+    state.busyPostingData = payload
     try {
         def postParams = [
             uri: state.uri,
@@ -830,11 +839,12 @@ def postToInfluxDB(data) {
             ignoreSSLIssues: settings.prefIgnoreSSLIssues,
             body : payload
         ]
-        asynchttpPost('handleInfluxResponse', postParams, data)
+        asynchttpPost('handleInfluxResponse', postParams, [data: payload])
     }
     catch (e) {
         logger("Error creating post to InfluxDB: ${e}", "error")
         state.busyPosting = false
+        state.busyPostingData = null
     }
 }
 
@@ -846,10 +856,11 @@ def postToInfluxDB(data) {
 def handleInfluxResponse(hubResponse, payload) {
     if (hubResponse.status >= 400) {
         logger("Error posting to InfluxDB: Status: ${hubResponse.status}, Error: ${hubResponse.errorMessage}, Headers: ${hubResponse.headers}, Data: ${payload}", "error")
-        runIn(60 /*prefRetryTime*/, postToInfluxDB, [data: payload])
+        runIn(60 /*prefRetryTime*/, postToInfluxDB, payload)
     } else {
         logger("Status of post call is: ${hubResponse.status}", "debug")
         state.busyPosting = false
+        state.busyPostingData = null
     }
 }
 
