@@ -1,4 +1,4 @@
-/* groovylint-disable ImplementationAsType, InvertedCondition, LineLength, MethodReturnTypeRequired, MethodSize, NestedBlockDepth, NoDef, UnnecessaryGString, UnnecessaryObjectReferences, UnnecessaryToString, VariableTypeRequired */
+/* groovylint-disable DuplicateListLiteral, DuplicateNumberLiteral, DuplicateStringLiteral, ImplementationAsType, InvertedCondition, LineLength, MethodReturnTypeRequired, MethodSize, NestedBlockDepth, NoDef, UnnecessaryGString, UnnecessaryObjectReferences, UnnecessaryToString, VariableTypeRequired */
 /*****************************************************************************************************************
  *  Source: https://github.com/HubitatCommunity/InfluxDB-Logger
  *
@@ -44,6 +44,7 @@
  *                              Only create a keep alive event (softpoll) when no real event has been seen
  *                              Cleanup and rationalize logging
  *                              Further code cleanup
+ *   2023-02-26 Denny Page      Retry failed posts
  *****************************************************************************************************************/
 
 definition(
@@ -199,7 +200,7 @@ def setupMain() {
                 input "volts", "capability.voltageMeasurement", title: "Voltage Meters", multiple: true, required: false
                 input "waterSensors", "capability.waterSensor", title: "Water Sensors", multiple: true, required: false
                 input "windowShades", "capability.windowShade", title: "Window Shades", multiple: true, required: false
-             }
+            }
         }
 
         if (prefSoftPollingInterval != "0") {
@@ -777,7 +778,7 @@ def queueToInfluxDb(data) {
     }
     else if (loggerQueue.size() == 1) {
         logger("Scheduling batch", "debug")
-        // prefBatchTimeLimit does not exist in older configurations
+        // NB: prefBatchTimeLimit does not exist in older configurations
         runIn(settings.prefBatchTimeLimit ? settings.prefBatchTimeLimit.toInteger() : 60, writeQueuedDataToInfluxDb)
     }
 }
@@ -788,32 +789,48 @@ def writeQueuedDataToInfluxDb() {
         // Failsafe if coming from an old version
         return
     }
-
-    Integer size = loggerQueue.size()
-    if (size == 0) {
-        logger("No queued data to write to InfluxDB", "debug")
-        return
-    }
-
-    logger("Writing queued data of size ${size}", "debug")
-    String writeData = loggerQueue.toArray().join('\n')
-    postToInfluxDB(writeData)
-    loggerQueue.clear()
-}
-
-/**
- *  postToInfluxDB()
- *
- *  Posts data to InfluxDB.
- *
- **/
-def postToInfluxDB(data) {
     if (state.uri == null) {
         // Failsafe if using an old config
         setupDB()
     }
 
-    logger("postToInfluxDB(): Posting data to InfluxDB: ${state.uri}, Data: [${data}]", "info")
+    // NB: older versions will not have state.postCount set
+    Integer postCount = state.postCount ?: 0
+    Long postExpire = state.postExpire ?: 0
+    Long now = now()
+
+    // Is a post already running?
+    if (postCount) {
+        if (now >= postExpire) {
+            // FIXME? Should there also be a limit on the queue size?
+            logger("Post expired: dropping ${postCount} events", "warn")
+            listDrop(loggerQueue, postCount)
+            state.postExpire = 0
+            state.postCount = 0
+        }
+        else {
+            // Check again in a few seconds
+            logger("Previous post pending... retrying in 10 seconds", "debug")
+            runIn(10, writeQueuedDataToInfluxDb)
+            return
+        }
+    }
+
+    Integer size = loggerQueue.size()
+    logger("Number of events queued for InfluxDB: ${size}", "debug")
+    if (size == 0) {
+        return
+    }
+
+    if (postExpire == 0) {
+        // FIXME? Expire is 5x the timeout on the post. Might be appropriate
+        // to derive timeout and expiration from configuration
+        state.postExpire = now + 300000
+    }
+    state.postCount = size
+
+    String data = loggerQueue.toArray().join('\n')
+    logger("Posting data to InfluxDB: ${state.uri}, Data: [${data}]", "info")
 
     // Hubitat Async http Post
     try {
@@ -822,7 +839,8 @@ def postToInfluxDB(data) {
             requestContentType: 'application/json',
             contentType: 'application/json',
             headers: state.headers,
-            body : data
+            timeout: 60,
+            body: data
         ]
         asynchttpPost('handleInfluxResponse', postParams)
     }
@@ -834,14 +852,47 @@ def postToInfluxDB(data) {
 /**
  *  handleInfluxResponse()
  *
- *  Handles response from post made in postToInfluxDB().
+ *  Handles response from post made in writeQueuedDataToInfluxDb().
  **/
 def handleInfluxResponse(hubResponse, data) {
+    loggerQueue = state.loggerQueue
+    // NB: older versions will not have postCount set
+    Integer postCount = state.postCount ?: 0
+    Long postExpire = state.postExpire ?: 0
+    Long now = now()
+
     if (hubResponse.status >= 400) {
         logger("Error posting to InfluxDB: Status: ${hubResponse.status}, Error: ${hubResponse.errorMessage}, Headers: ${hubResponse.headers}, Data: ${data}", "error")
+        // Failsafe for transition from prior versions
+        if (postCount == 0) {
+            return
+        }
+
+        if (now >= postExpire) {
+            logger("Post expired: dropping ${postCount} events", "debug")
+            state.postExpire = 0
+            listDrop(loggerQueue, postCount)
+        }
+
+        state.postCount = 0
+        // Try a batch in a few seconds
+        runIn(10, writeQueuedDataToInfluxDb)
     }
     else {
         logger("Status of post call is: ${hubResponse.status}", "debug")
+        state.postExpire = 0
+        if (postCount) {
+            listDrop(loggerQueue, postCount)
+        }
+    }
+
+    state.postCount = 0
+}
+
+private listDrop(list, count) {
+    // Unfortunately list.drop(count) does not work here
+    count.times {
+        list.remove(0)
     }
 }
 
@@ -914,7 +965,9 @@ private manageSubscriptions() {
     unsubscribe()
 
     // Subscribe to mode events:
-    if (prefLogModeEvents) subscribe(location, "mode", handleModeEvent)
+    if (prefLogModeEvents) {
+        subscribe(location, "mode", handleModeEvent)
+    }
 
     if (accessAllAttributes) {
         // Subscribe to device attributes (iterate over each attribute for each device collection in state.deviceAttributes):
