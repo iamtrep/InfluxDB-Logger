@@ -837,6 +837,7 @@ def postToInfluxDB(payload) {
 
     logger("postToInfluxDB(): Posting data to InfluxDB: ${state.uri}, Data: [${payload}]", "info")
 
+    // Keep a copy, in case the scheduled retry gets unscheduled we can recover (otherwise risk infinite looping...)
     state.busyPostingData = payload
     try {
         def postParams = [
@@ -864,6 +865,7 @@ def handleInfluxResponse(hubResponse, payload) {
     if (hubResponse.status >= 400) {
         logger("Error posting to InfluxDB: Status: ${hubResponse.status}, Error: ${hubResponse.errorMessage}, Headers: ${hubResponse.headers}, Data: ${payload}", "error")
         runIn(60 /*prefRetryTime*/, postToInfluxDB, payload)
+        logger("Retrying failed http POST - logger queue size is now ${state.loggerQueue.size()}","warn")
     } else {
         logger("Status of post call is: ${hubResponse.status}", "debug")
         state.busyPostingData = null
