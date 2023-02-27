@@ -86,11 +86,6 @@ def setupMain() {
 
         }
 
-        section("Change Application Name"){
-            input "nameOverride", "text", title: "New Name for Application", multiple: false, required: false, submitOnChange: true, defaultValue: app.getLabel()
-            if(nameOverride != app.getLabel) app.updateLabel(nameOverride)
-        }
-
         section("\n<h3>InfluxDB Settings:</h3>") {
             href(
                 name: "href",
@@ -690,6 +685,7 @@ def softPoll() {
                             device: d,
                             deviceId: d.id,
                             displayName: d.displayName,
+                            type: "state",
                             unixTime: timeNow
                         ])
                     }
@@ -715,6 +711,7 @@ def softPoll() {
                                     device: d,
                                     deviceId: d.id,
                                     displayName: d.displayName,
+                                    type: "state",
                                     unixTime: timeNow
                                 ])
                             }
