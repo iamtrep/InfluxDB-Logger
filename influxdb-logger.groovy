@@ -824,10 +824,7 @@ def postToInfluxDB(data) {
         setupDB()
     }
 
-    if (state.uri == "") {
-        logger("postToInfluxDB(): no database connection set! DROPPING QUEUED DATA: [${data}]", "info")
-    } else {
-        logger("postToInfluxDB(): Posting data to InfluxDB: ${state.uri}, Data: [${data}]", "info")
+    logger("postToInfluxDB(): Posting data to InfluxDB: ${state.uri}, Data: [${data}]", "info")
 
     state.busyPosting = true
     try {
