@@ -783,6 +783,11 @@ def queueToInfluxDb(data) {
 }
 
 def writeQueuedDataToInfluxDb() {
+    if (state.busyPosting) {
+        logger("writeQueuedDataToInfluxDb(): already busy posting", "debug")
+        return
+    }
+
     loggerQueue = state.loggerQueue
     if (loggerQueue == null) {
         // Failsafe if coming from an old version
@@ -815,7 +820,7 @@ def postToInfluxDB(data) {
 
     logger("postToInfluxDB(): Posting data to InfluxDB: ${state.uri}, Data: [${data}]", "info")
 
-    // Hubitat Async http Post
+    state.busyPosting = true
     try {
         def postParams = [
             uri: state.uri,
@@ -823,12 +828,13 @@ def postToInfluxDB(data) {
             contentType: 'application/json',
             headers: state.headers,
             ignoreSSLIssues: settings.prefIgnoreSSLIssues,
-            body : data
+            body : payload
         ]
-        asynchttpPost('handleInfluxResponse', postParams)
+        asynchttpPost('handleInfluxResponse', postParams, data)
     }
     catch (e) {
         logger("Error creating post to InfluxDB: ${e}", "error")
+        state.busyPosting = false
     }
 }
 
@@ -837,12 +843,13 @@ def postToInfluxDB(data) {
  *
  *  Handles response from post made in postToInfluxDB().
  **/
-def handleInfluxResponse(hubResponse, data) {
+def handleInfluxResponse(hubResponse, payload) {
     if (hubResponse.status >= 400) {
-        logger("Error posting to InfluxDB: Status: ${hubResponse.status}, Error: ${hubResponse.errorMessage}, Headers: ${hubResponse.headers}, Data: ${data}", "error")
-    }
-    else {
+        logger("Error posting to InfluxDB: Status: ${hubResponse.status}, Error: ${hubResponse.errorMessage}, Headers: ${hubResponse.headers}, Data: ${payload}", "error")
+        runIn(60 /*prefRetryTime*/, postToInfluxDB, [data: payload])
+    } else {
         logger("Status of post call is: ${hubResponse.status}", "debug")
+        state.busyPosting = false
     }
 }
 
@@ -991,4 +998,3 @@ private String escapeStringForInfluxDB(String str) {
     }
     return str
 }
-
