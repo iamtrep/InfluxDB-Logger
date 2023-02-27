@@ -367,7 +367,7 @@ def updated() {
     manageSubscriptions()
 
     // Ensure asynchttpPost retry loop is healthy  (don't call unschedule() !! )
-    if (state.busyPosting && state.busyPostingData) {
+    if (state.busyPostingData) {
         // wish there was a method to check if the scheduled job is running...
         unschedule(postToInfluxDB)
         runIn(1, postToInfluxDB, [data:state.busyPostingData])
@@ -784,34 +784,43 @@ def queueToInfluxDb(data) {
         writeQueuedDataToInfluxDb()
     }
     else if (loggerQueue.size() == 1) {
-        logger("Scheduling batch", "debug")
         // prefBatchTimeLimit does not exist in older configurations
-        runIn(settings.prefBatchTimeLimit ? settings.prefBatchTimeLimit.toInteger() : 60, writeQueuedDataToInfluxDb)
+        def secondsToRunIn = settings.prefBatchTimeLimit ? settings.prefBatchTimeLimit.toInteger() : 60
+        logger("Scheduling batch write in ${secondsToRunIn}", "debug")
+        runIn(secondsToRunIn, writeQueuedDataToInfluxDb)
     }
 }
 
 def writeQueuedDataToInfluxDb() {
-    if (state.busyPosting) {
+    if (state.busyPostingData) {
         logger("writeQueuedDataToInfluxDb(): already busy posting", "debug")
         return
     }
 
-    loggerQueue = state.loggerQueue
-    if (loggerQueue == null) {
+    if (state.loggerQueue == null) {
         // Failsafe if coming from an old version
         return
     }
 
-    Integer size = loggerQueue.size()
+    Integer size = state.loggerQueue.size()
     if (size == 0) {
         logger("No queued data to write to InfluxDB", "debug")
         return
     }
 
-    logger("Writing queued data of size ${size}", "debug")
-    String writeData = loggerQueue.toArray().join('\n')
+    def batchSizeLimit = settings.prefBatchSizeLimit ?: 50
+    if (size > batchSizeLimit) size = batchSizeLimit
+
+    // grab only (size) elements off the queue
+    // TODO - there's gotta be a better way to splice a list in Groovy...
+    def dataToSend = []
+    size.times {
+        dataToSend.add(state.loggerQueue.remove(0))
+    }
+    def String writeData = dataToSend.toArray().join('\n')
     postToInfluxDB(writeData)
-    loggerQueue.clear()
+
+    logger("writeQueuedDataToInfluxDb(): wrote batch of size ${size}, logger queue size is now ${state.loggerQueue.size()}","debug")
 }
 
 /**
@@ -828,7 +837,6 @@ def postToInfluxDB(payload) {
 
     logger("postToInfluxDB(): Posting data to InfluxDB: ${state.uri}, Data: [${payload}]", "info")
 
-    state.busyPosting = true
     state.busyPostingData = payload
     try {
         def postParams = [
@@ -843,7 +851,6 @@ def postToInfluxDB(payload) {
     }
     catch (e) {
         logger("Error creating post to InfluxDB: ${e}", "error")
-        state.busyPosting = false
         state.busyPostingData = null
     }
 }
@@ -859,7 +866,6 @@ def handleInfluxResponse(hubResponse, payload) {
         runIn(60 /*prefRetryTime*/, postToInfluxDB, payload)
     } else {
         logger("Status of post call is: ${hubResponse.status}", "debug")
-        state.busyPosting = false
         state.busyPostingData = null
     }
 }
