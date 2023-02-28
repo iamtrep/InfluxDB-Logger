@@ -778,8 +778,18 @@ def queueToInfluxDb(data) {
         state.loggerQueue = loggerQueue
     }
 
+    def batchSizeLimit = settings.prefBatchSizeLimit ?: 50
+    def queueSizeLimit = settings.prefQueueSizeLimit ?: 100 * batchSizeLimit  // TODO: add prefQueueSizeLimit to settings page
+
+    if (loggerQueue.size >= queueSizeLimit) {
+        // start dropping data...
+        logger("Maximum queue size reached - no longer accepting new data","warn")
+        return
+    }
+
     loggerQueue.add(data)
-    if (loggerQueue.size() >= (settings.prefBatchSizeLimit ?: 50)) {
+
+    if (loggerQueue.size() >= batchSizeLimit) {
         logger("Maximum queue size reached", "debug")
         writeQueuedDataToInfluxDb()
     }
