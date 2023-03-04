@@ -465,25 +465,28 @@ def handleEvent(evt) {
     //    If value is an integer, it must have a trailing "i"
     //    If value is a string, it must be enclosed in double quotes.
     String measurement = evt.name
-    // tags:
     String deviceId = evt?.deviceId?.toString()
     String deviceName = escapeStringForInfluxDB(evt?.displayName)
-    String hubName = escapeStringForInfluxDB(evt?.device?.device?.hub?.name?.toString())
-    String locationName = escapeStringForInfluxDB(location.name)
-    String sampleType = escapeStringForInfluxDB(evt.type)
 
+    String data = "${measurement},deviceId=${deviceId},deviceName=${deviceName}"
 
-    String unit = escapeStringForInfluxDB(evt.unit)
-    String value = escapeStringForInfluxDB(evt.value)
-    String valueBinary = ''
-
-    String data = "${measurement},deviceId=${deviceId},deviceName=${deviceName},type=${sampleType}""
     if (settings.includeHubInfo == null || settings.includeHubInfo) {
+        def String hubName = escapeStringForInfluxDB(evt?.device?.device?.hub?.name?.toString())
+        def String locationName = escapeStringForInfluxDB(location.name)
         data += ",hubName=${hubName},locationName=${locationName}"
+    }
+
+    if (evt.type != null) {
+        def String sampleType = escapeStringForInfluxDB(evt.type)
+        data += ",type=${sampleType}"
     }
 
     // Unit tag and fields depend on the event type:
     //  Most string-valued attributes can be translated to a binary value too.
+    String unit = escapeStringForInfluxDB(evt.unit)
+    String value = escapeStringForInfluxDB(evt.value)
+    String valueBinary = ''
+
     if ('acceleration' == evt.name) { // acceleration: Calculate a binary value (active = 1, inactive = 0)
         unit = 'acceleration'
         value = '"' + value + '"'
