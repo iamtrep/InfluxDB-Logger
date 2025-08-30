@@ -86,6 +86,7 @@
  *                              Remove old migration items
  *   2025-03-13 Denny Page      When debugging, log individual fields of device and variable events
  *   2025-04-30 Denny Page      Clarify InfluxDB Version as referring to Write Protocol Version
+ *   2025-08-30 Denny Page      Address softpoll issue with boolean system variables
  *****************************************************************************************************************/
 
 definition(
@@ -646,7 +647,7 @@ private String encodeVariableEvent(evt) {
             value = "${evt.value}"
             break
         case 'boolean':
-            value = evt.value == 'true' ? 'T' : 'F'
+            value = evt.value.toString() == 'true' ? 'T' : 'F'
             break
         case 'string':
             value = '"' + escapeStringForInfluxDB(evt.value) + '"'
