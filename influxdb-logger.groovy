@@ -182,7 +182,7 @@ def setupMain() {
             input(
                 "appName",
                 "text",
-                title: "Aplication Name",
+                title: "Application Name",
                 multiple: false,
                 required: true,
                 submitOnChange: true,
