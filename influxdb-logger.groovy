@@ -1062,7 +1062,7 @@ private void queueToInfluxDb(List<String> eventList) {
     }
     else if (priorLoggerQueueSize > settings.prefBacklogLimit + settings.prefBatchSizeLimit) {
         // Failsafe in case writeQueuedDataToInfluxDb timer chain has been broken
-        writeQueuedDataToInfluxDb()
+        runIn(1,writeQueuedDataToInfluxDb)
     }
 }
 
