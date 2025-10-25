@@ -465,6 +465,14 @@ def connectionPage() {
                     required: true
                 )
             }
+            input(
+                name: "prefHttpPostTimeout",
+                title: "HTTP POST timeout value (in seconds)",
+                type: "number",
+                range: "5..60",
+                defaultValue: "60",
+                required: false
+            )
         }
     }
 }
@@ -1123,7 +1131,7 @@ void writeQueuedDataToInfluxDb() {
         contentType: 'application/json',
         headers: state.headers,
         ignoreSSLIssues: settings.prefIgnoreSSLIssues,
-        timeout: 60,
+        timeout: settings.prefHttpPostTimeout ?: 60,
         body: data
     ]
     asynchttpPost('handleInfluxResponse', postParams, [ postTime: timeNow ])
