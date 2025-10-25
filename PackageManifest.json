@@ -1,10 +1,10 @@
 {
   "packageName": "InfluxDB-Logger",
-  "author": "Joshua Marker (tooluser)",
-  "version": "2.3.0",
+  "author": "Denny Page",
+  "version": "4.1.1",
   "minimumHEVersion": "2.2.9",
-  "dateReleased": "2023-02-26",
-  "releaseNotes": "2.3.0 Cleanup and rationalize UI\nUse time since first data value to trigger post rather than periodic timer\nOnly create a keep alive event (softpoll) when no real event has been seen\nCleanup and rationalize logging",
+  "dateReleased": "2025-08-30",
+  "releaseNotes": "4.1.1: Address softpoll issue with boolean system variables\n4.1.0: Clarify InfluxDB Version as referring to Write Protocol Version\n4.0.1: When debugging, log individual fields of device and variable events\n4.0.0:\n Add failsafe call to writeQueuedDataToInfluxDb when new events are queued\n Remove migration support for versions prior to 3.0.0\n3.3.2: Add warning about special characters in Database, Org and Bucket names\n3.3.1: Remove default values for Influx Version and Authorization Type\n3.3.0: Add support for Hub Variables",
   "communityLink": "https://community.hubitat.com/t/influxdb-logger/110548",
   "apps": [
     {
