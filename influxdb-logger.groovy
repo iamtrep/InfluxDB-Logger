@@ -171,9 +171,6 @@ import groovy.transform.Field
 @Field static final Integer logInfo  = 3
 @Field static final Integer logDebug = 4
 
-@Field static final Integer RETRY_MIN_SECONDS = 60
-@Field static final Integer RETRY_MAX_SECONDS = 600
-
 preferences {
     page(name: "setupMain")
     page(name: "connectionPage")
@@ -623,7 +620,7 @@ void hubRestartHandler(evt) {
     }
 
     if (state.loggerQueue.size()) {
-        runIn(RETRY_MIN_SECONDS, writeQueuedDataToInfluxDb)
+        runIn(60, writeQueuedDataToInfluxDb)
     }
 }
 
@@ -1091,15 +1088,6 @@ void writeQueuedDataToInfluxDb() {
         return
     }
 
-    // Check for backoff after consecutive failures
-    Integer consecutiveFailures = state.consecutiveFailures ?: 0
-    if (consecutiveFailures > 0) {
-        Integer backoffSeconds = Math.min(RETRY_MIN_SECONDS * Math.pow(2, consecutiveFailures - 1), RETRY_MAX_SECONDS).intValue()
-        logger("Backoff active: delaying ${backoffSeconds}s due to ${consecutiveFailures} consecutive failures", logWarn)
-        runIn(backoffSeconds, writeQueuedDataToInfluxDb)
-        return
-    }
-
     Integer postCount = state.postCount
     Long timeNow = now()
     if (postCount) {
@@ -1160,52 +1148,50 @@ void handleInfluxResponse(hubResponse, closure) {
     Double elapsed = (closure) ? (now() - closure.postTime) / 1000 : 0
     Integer postCount = state.postCount
     Integer loggerQueueSize
-    Boolean success = (hubResponse.status < 400)
 
     // Clear the prior post count
     state.postCount = 0
 
-    if (success) {
+    if (hubResponse.status < 400) {
         logger("Post of ${postCount} events complete - elapsed time ${elapsed} seconds - Status: ${hubResponse.status}", logInfo)
-        state.consecutiveFailures = 0
-
-        // Remove posted events from queue
-        state.loggerQueue = state.loggerQueue.drop(postCount)
-        loggerQueueSize = state.loggerQueue.size()
-
-        // Continue immediately if more to send
-        if (loggerQueueSize) {
-            runIn(1, writeQueuedDataToInfluxDb)
-        }
     }
     else {
-        // Failure case
-        logger("Post of ${postCount} events failed - elapsed time ${elapsed} seconds - Status: ${hubResponse.status}, Error: ${hubResponse.errorMessage}", logWarn)
+        logger("Post of ${postCount} events failed - elapsed time ${elapsed} seconds - Status: ${hubResponse.status}, Error: ${hubResponse.errorMessage}, Headers: ${hubResponse.headers}, Data: ${data}", logWarn)
         if (postCount == 1) {
             logger("Failed record was: ${state.loggerQueue[0]}", logError)
         }
 
         loggerQueueSize = state.loggerQueue.size()
+        if (loggerQueueSize <= settings.prefBacklogLimit) {
+            if (loggerQueueSize > postCount) {
+                logger("Backlog of ${loggerQueueSize} events", logWarn)
+            }
 
-        if (loggerQueueSize > settings.prefBacklogLimit) {
-            logger("Backlog of ${loggerQueueSize} events exceeds limit of ${settings.prefBacklogLimit}: dropping ${postCount} events", logError)
-            state.loggerQueue = state.loggerQueue.drop(postCount)
-            loggerQueueSize = state.loggerQueue.size()
-        }
-        else if (loggerQueueSize > postCount) {
-            logger("Backlog of ${loggerQueueSize} events", logWarn)
+            // Try again later
+            runIn(60, writeQueuedDataToInfluxDb)
+
+            // Update queue size variable if in use
+            // NB: This is done after reschedule in case the variable update fails
+            if (prefQueueSizeVariable) {
+                setGlobalVar(prefQueueSizeVariable, loggerQueueSize)
+            }
+            return
         }
 
-        // let writeQueuedDataToInfluxDB manage any backoff
-        state.consecutiveFailures = (state.consecutiveFailures ?: 0) + 1
+        logger("Backlog of ${loggerQueueSize} events exceeds limit of ${settings.prefBacklogLimit}: dropping ${postCount} events", logError)
+    }
 
-        // try again with a minimum delay in case of failure
-        if (loggerQueueSize) {
-            runIn(RETRY_MIN_SECONDS, writeQueuedDataToInfluxDb)
-        }
+    // Remove the post from the queue
+    state.loggerQueue = state.loggerQueue.drop(postCount)
+    loggerQueueSize = state.loggerQueue.size()
+
+    // Go again?
+    if (loggerQueueSize) {
+        runIn(1, writeQueuedDataToInfluxDb)
     }
 
     // Update queue size variable if in use
+    // NB: This is done after reschedule in case the variable update fails
     if (prefQueueSizeVariable) {
         setGlobalVar(prefQueueSizeVariable, loggerQueueSize)
     }
