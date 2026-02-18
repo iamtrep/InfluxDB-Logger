@@ -301,10 +301,10 @@ def setupMain() {
                     submitOnChange: true
                 )
                 settings.allDevices.each { device ->
-                    deviceId = device.getId()
-                    attrList = device.getSupportedAttributes().unique()
+                    def deviceId = device.getId()
+                    def attrList = device.getSupportedAttributes().unique()
                     if (attrList) {
-                        options = []
+                        def options = []
                         attrList.each { attr ->
                             options.add("${attr}")
                         }
@@ -580,17 +580,17 @@ void updated() {
  * If using capability selection, a device may appear multiple times in the array, each time with a single attribute.
  **/
 private Map<String,List> getDeviceAttrMap() {
-    deviceAttrMap = [:]
+    Map<String,List> deviceAttrMap = [:]
 
     if (settings.accessAllAttributes) {
         settings.allDevices.each { device ->
-            deviceId = device.getId()
+            def deviceId = device.getId()
             deviceAttrMap[device] = settings["attrForDev${deviceId}"]
         }
     }
     else {
         deviceTypeMap.each { name, entry ->
-            deviceList = settings."${name}"
+            def deviceList = settings."${name}"
             if (deviceList) {
                 deviceList.each { device ->
                     deviceAttrMap[device] = entry.attributes
@@ -993,12 +993,12 @@ void softPoll() {
     // Generate variable records
     variableList.each { name ->
         logger("Keep alive for variable ${name}", logDebug)
-        event = encodeVariableEvent([
             name: "variable:${name}",
             value: getGlobalVar(name).value,
             unixTime: timeNow
         ])
         eventList.add(event)
+            def event = encodeVariableEvent([
     }
 
     // Generate device records
@@ -1014,7 +1014,7 @@ void softPoll() {
                 Integer activityMinutes = (timeNow - lastState.date.time) / 60000
                 if (activityMinutes > state.softPollingInterval) {
                     logger("Keep alive for device ${device}(${attr})", logDebug)
-                    event = encodeDeviceEvent([
+                    def event = encodeDeviceEvent([
                         name: attr,
                         value: lastState.value,
                         unit: lastState.unit,
@@ -1051,7 +1051,7 @@ void softPoll() {
  **/
 private void queueToInfluxDb(List<String> eventList) {
     // Add the data to the queue
-    priorLoggerQueueSize = state.loggerQueue.size()
+    Integer priorLoggerQueueSize = state.loggerQueue.size()
     state.loggerQueue += eventList
     eventList.each { event ->
         logger("Queued event: ${event}", logInfo)
