@@ -87,6 +87,7 @@
  *   2025-03-13 Denny Page      When debugging, log individual fields of device and variable events
  *   2025-04-30 Denny Page      Clarify InfluxDB Version as referring to Write Protocol Version
  *   2025-08-30 Denny Page      Address softpoll issue with boolean system variables
+ *   2025-12-21 Denny Page      Lower default values
  *****************************************************************************************************************/
 
 definition(
@@ -211,7 +212,7 @@ def setupMain() {
                 title: "Batch time limit - maximum number of seconds before writing a batch to InfluxDB (range 1-300)",
                 type: "number",
                 range: "1..300",
-                defaultValue: "60",
+                defaultValue: "15",
                 required: true
             )
             input(
@@ -224,10 +225,10 @@ def setupMain() {
             )
             input(
                 name: "prefBacklogLimit",
-                title: "Backlog size limit - maximum number of queued events before dropping failed posts (range 1-10000)",
+                title: "Backlog size limit - maximum number of queued events before dropping failed posts (range 1-5000)",
                 type: "number",
-                range: "1..10000",
-                defaultValue: "5000",
+                range: "1..5000",
+                defaultValue: "500",
                 required: true
             )
             input(
@@ -1179,7 +1180,7 @@ void handleInfluxResponse(hubResponse, closure) {
 
     // Go again?
     if (loggerQueueSize) {
-        runIn(1, writeQueuedDataToInfluxDb)
+        runInMillis(50, writeQueuedDataToInfluxDb)
     }
 
     // Update queue size variable if in use
