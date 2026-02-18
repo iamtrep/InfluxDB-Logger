@@ -19,7 +19,7 @@
  *   on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *   for the specific language governing permissions and limitations under the License.
  *
- *   Modifcation History
+ *   Modification History
  *   Date       Name            Change
  *   2019-02-02 Dan Ogorchock   Use asynchttpPost() instead of httpPost() call
  *   2019-09-09 Caleb Morse     Support deferring writes and doing bulk writes to influxdb
@@ -541,7 +541,7 @@ void updated() {
     unschedule()
 
     // Set up softpoll if requested
-    // NB: This is called softPoll to maintain backward compatibility wirh prior versions
+    // NB: This is called softPoll to maintain backward compatibility with prior versions
     state.softPollingInterval = settings.prefSoftPollingInterval.toInteger()
     switch (state.softPollingInterval) {
         case 1:
@@ -577,7 +577,7 @@ void updated() {
  *  Build a device attribute map.
  *
  * If using attribute selection, a device will appear only once in the array, with one or more attributes.
- * If using capability selection, a device may appear multiple times in the array, each time with a single attribue.
+ * If using capability selection, a device may appear multiple times in the array, each time with a single attribute.
  **/
 private Map<String,List> getDeviceAttrMap() {
     deviceAttrMap = [:]
@@ -669,7 +669,7 @@ private String encodeVariableEvent(evt) {
     data += " value=${value}"
 
     // Add the event timestamp
-    long eventTimestamp = evt.unixTime * 1e6 // milliseconds to nanoseconds
+    long eventTimestamp = evt.unixTime * 1000000L // milliseconds to nanoseconds
     data += " ${eventTimestamp}"
 
     return(data)
@@ -698,10 +698,10 @@ private String encodeDeviceEvent(evt) {
     //           tag will be set to the unit of the event (evt.unit). Both will be
     //           escaped.
     //   Value:  If the value in the event (evt.value) is a valid number, the value
-    //           will be InfluxDB's default numeric type (float). Othersie, the value
-    //           will be escaped and inclosed in double quotes as a string.
+    //           will be InfluxDB's default numeric type (float). Otherwise, the value
+    //           will be escaped and enclosed in double quotes as a string.
     //
-    //   NB: While valueBinary is actuall a true/false Boolean, it is inserted into
+    //   NB: While valueBinary is actually a true/false Boolean, it is inserted into
     //       InfluxDB as an integer for backward compatibility reasons.
     //
     String unit = ''
@@ -901,7 +901,7 @@ private String encodeDeviceEvent(evt) {
     }
 
     // Add the event timestamp
-    long eventTimestamp = evt.unixTime * 1e6 // milliseconds to nanoseconds
+    long eventTimestamp = evt.unixTime * 1000000L // milliseconds to nanoseconds
     data += " ${eventTimestamp}"
 
     // Return the completed string
@@ -924,7 +924,7 @@ private String encodeHubInfo(evt) {
     String sunriseTime = escapeStringForInfluxDB(times.sunrise.format("HH:mm", location.timeZone))
     String sunsetTime = escapeStringForInfluxDB(times.sunset.format("HH:mm", location.timeZone))
 
-    Long eventTimestamp = (evt?.unixTime ? evt.unixTime : now()) * 1e6       // Time is in milliseconds, but InfluxDB expects nanoseconds
+    Long eventTimestamp = (evt?.unixTime ? evt.unixTime : now()) * 1000000L       // Time is in milliseconds, but InfluxDB expects nanoseconds
 
     String data = "_hubInfo,hubName=${hubName} localIP=\"${localIP}\",firmwareVersion=\"${firmwareVersion}\",upTime=\"${upTime}\",mode=\"${mode}\",sunriseTime=\"${sunriseTime}\",sunsetTime=\"${sunsetTime}\" ${eventTimestamp}"
     return data
@@ -1009,14 +1009,15 @@ void softPoll() {
                 logger("Keep alive for device ${device}(${attr}) suppressed - momentary attribute", logDebug)
                 return
             }
-            if (device.latestState(attr)) {
-                Integer activityMinutes = (timeNow - device.latestState(attr).date.time) / 60000
+            def lastState = device.latestState(attr)
+            if (lastState) {
+                Integer activityMinutes = (timeNow - lastState.date.time) / 60000
                 if (activityMinutes > state.softPollingInterval) {
                     logger("Keep alive for device ${device}(${attr})", logDebug)
                     event = encodeDeviceEvent([
                         name: attr,
-                        value: device.latestState(attr).value,
-                        unit: device.latestState(attr).unit,
+                        value: lastState.value,
+                        unit: lastState.unit,
                         device: device,
                         deviceId: device.id,
                         displayName: device.displayName,
@@ -1202,6 +1203,8 @@ void renameVariable(String oldName, String newName) {
     if (settings?.prefQueueSizeVariable == oldName) {
         app.updateSetting("prefQueueSizeVariable", [type: "enum", value: newName])
         logger("Queue size available in variable ${newName}", logInfo)
+        removeInUseGlobalVar(oldName)
+        addInUseGlobalVar(newName)
     }
 
     // Check list of monitored variables
@@ -1216,6 +1219,8 @@ void renameVariable(String oldName, String newName) {
         logger("Subscribing to variable ${newName}", logInfo)
         subscribe(location, "variable:${newName}", "handleVariableEvent")
         unsubscribe(location, "variable:${oldName}", "handleVariableEvent")
+        removeInUseGlobalVar(oldName)
+        addInUseGlobalVar(newName)
     }
 }
 
