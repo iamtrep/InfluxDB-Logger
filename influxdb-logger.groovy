@@ -939,7 +939,7 @@ void handleVariableEvent(evt) {
     logger("Handle Variable Event: ${evt.name}, ${evt.value}", logDebug)
 
     // Encode the event
-    data = encodeVariableEvent(evt)
+    String data = encodeVariableEvent(evt)
 
     // Add event to the queue for InfluxDB
     queueToInfluxDb([data])
@@ -954,7 +954,7 @@ void handleEvent(evt) {
     logger("Handle Event: ${evt.displayName}, ${evt.name}, ${evt.unit}, ${evt.value}", logDebug)
 
     // Encode the event
-    data = encodeDeviceEvent(evt)
+    String data = encodeDeviceEvent(evt)
 
     // Add event to the queue for InfluxDB
     queueToInfluxDb([data])
@@ -969,7 +969,7 @@ void handleModeEvent(evt) {
     logger("Handle Mode Event: ${evt}", logDebug)
 
     // Encode the event
-    data = encodeHubInfo(evt)
+    String data = encodeHubInfo(evt)
 
     // Add event to the queue for InfluxDB
     queueToInfluxDb([data])
@@ -1128,7 +1128,7 @@ void writeQueuedDataToInfluxDb() {
         timeout: 60,
         body: data
     ]
-    asynchttpPost('handleInfluxResponse', postParams, [ postTime: timeNow ])
+    asynchttpPost('handleInfluxResponse', postParams, [ postTime: timeNow, postData: data ])
 }
 
 /**
@@ -1150,7 +1150,7 @@ void handleInfluxResponse(hubResponse, closure) {
         logger("Post of ${postCount} events complete - elapsed time ${elapsed} seconds - Status: ${hubResponse.status}", logInfo)
     }
     else {
-        logger("Post of ${postCount} events failed - elapsed time ${elapsed} seconds - Status: ${hubResponse.status}, Error: ${hubResponse.errorMessage}, Headers: ${hubResponse.headers}, Data: ${data}", logWarn)
+        logger("Post of ${postCount} events failed - elapsed time ${elapsed} seconds - Status: ${hubResponse.status}, Error: ${hubResponse.errorMessage}, Headers: ${hubResponse.headers}, Data: ${closure?.postData}", logWarn)
         if (postCount == 1) {
             logger("Failed record was: ${state.loggerQueue[0]}", logError)
         }
