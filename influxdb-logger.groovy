@@ -993,12 +993,12 @@ void softPoll() {
     // Generate variable records
     variableList.each { name ->
         logger("Keep alive for variable ${name}", logDebug)
+        def event = encodeVariableEvent([
             name: "variable:${name}",
             value: getGlobalVar(name).value,
             unixTime: timeNow
         ])
         eventList.add(event)
-            def event = encodeVariableEvent([
     }
 
     // Generate device records
