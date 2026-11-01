@@ -107,6 +107,7 @@ definition(
 )
 
 import groovy.transform.Field
+import java.security.MessageDigest
 
 // Device type list
 @Field static final Map<String,Map> deviceTypeMap = [
@@ -174,6 +175,14 @@ import groovy.transform.Field
 @Field static final Integer logWarn  = 2
 @Field static final Integer logInfo  = 3
 @Field static final Integer logDebug = 4
+
+@Field static final Integer RETRY_MIN_SECONDS = 60
+@Field static final Integer RETRY_MAX_SECONDS = 900
+@Field static final Integer RETRY_AFTER_MAX_SECONDS = 3600
+@Field static final Integer SPOOL_REPLAY_SECONDS = 30
+@Field static final Integer SPOOL_THRESHOLD_DEFAULT = 300
+@Field static final Integer SPOOL_SEGMENT_DEFAULT = 250
+@Field static final Integer SPOOL_MAX_MB_DEFAULT = 64
 
 preferences {
     page(name: "setupMain")
@@ -284,6 +293,39 @@ def setupMain() {
                 title: "Only post device events to InfluxDB when the data value changes",
                 defaultValue: true
             )
+        }
+
+        section("\n<h3>Outage Buffering:</h3>") {
+            input(
+                "prefSpoolEnabled",
+                "bool",
+                title: "Spool events to File Manager when the queue grows, so an outage loses no data and doesn't slow the hub",
+                defaultValue: false,
+                submitOnChange: true
+            )
+            if (prefSpoolEnabled) {
+                input(
+                    "prefSpoolThreshold",
+                    "number",
+                    title: "Queue size that triggers spooling (events)",
+                    defaultValue: SPOOL_THRESHOLD_DEFAULT,
+                    range: "50..1000"
+                )
+                input(
+                    "prefSpoolSegmentLines",
+                    "number",
+                    title: "Events per spool file",
+                    defaultValue: SPOOL_SEGMENT_DEFAULT,
+                    range: "25..1000"
+                )
+                input(
+                    "prefSpoolMaxMB",
+                    "number",
+                    title: "Maximum spool size (MB) - past this the oldest events are dropped",
+                    defaultValue: SPOOL_MAX_MB_DEFAULT,
+                    range: "1..256"
+                )
+            }
         }
 
         section("Devices To Monitor:", hideable:true, hidden:false) {
@@ -503,6 +545,7 @@ void installed() {
  *  Runs when the app is uninstalled.
  **/
 void uninstalled() {
+    deleteSpool()
     log.info "${app.label}: Uninstalled"
 }
 
@@ -581,6 +624,12 @@ void updated() {
             break
     }
 
+    // Find any spooled events, and keep watch while there may be some
+    reconcileSpool()
+    if (settings.prefSpoolEnabled || spoolPending()) {
+        runEvery5Minutes(spoolWatchdog)
+    }
+
     // Flush any pending batch
     runIn(1, writeQueuedDataToInfluxDb)
 }
@@ -626,8 +675,13 @@ void hubRestartHandler(evt) {
         handleModeEvent(null)
     }
 
+    reconcileSpool()
+
     if (state.loggerQueue.size()) {
         runIn(60, writeQueuedDataToInfluxDb)
+    }
+    if (spoolPending()) {
+        runIn(RETRY_MIN_SECONDS + SPOOL_REPLAY_SECONDS, replaySpool)
     }
 }
 
@@ -1070,6 +1124,11 @@ private void queueToInfluxDb(List<String> eventList) {
         logger("Queued event: ${event}", logInfo)
     }
 
+    // Past the threshold the oldest events go to disk, which keeps the cost of each event bounded
+    if (settings.prefSpoolEnabled && state.loggerQueue.size() > spoolThreshold()) {
+        spillToSpool()
+    }
+
     // If this is the first data in the batch, trigger the timer
     if (priorLoggerQueueSize == 0) {
         logger("Scheduling batch", logDebug)
@@ -1123,7 +1182,8 @@ void writeQueuedDataToInfluxDb() {
         logger("Backlog of ${loggerQueueSize} events queued for InfluxDB", logWarn)
     }
 
-    postCount = loggerQueueSize < settings.prefBatchSizeLimit ? loggerQueueSize : settings.prefBatchSizeLimit
+    Integer batchLimit = state.postLimit ?: settings.prefBatchSizeLimit
+    postCount = loggerQueueSize < batchLimit ? loggerQueueSize : batchLimit
     state.postCount = postCount
     state.lastPost = timeNow
 
@@ -1132,7 +1192,16 @@ void writeQueuedDataToInfluxDb() {
     // logger("Posting data to InfluxDB: ${state.uri}, Data: [${data}]", logDebug)
 
     // Post it
-    def postParams = [
+    asynchttpPost('handleInfluxResponse', postParameters(data), [ postTime: timeNow ])
+}
+
+/**
+ *  postParameters()
+ *
+ *  Build the parameters for a post of line protocol data.
+ **/
+private Map postParameters(String data) {
+    return [
         uri: state.uri,
         requestContentType: 'application/json',
         contentType: 'application/json',
@@ -1141,7 +1210,44 @@ void writeQueuedDataToInfluxDb() {
         timeout: 60,
         body: data
     ]
-    asynchttpPost('handleInfluxResponse', postParams, [ postTime: timeNow ])
+}
+
+/**
+ *  isRejected()
+ *
+ *  True when the server refused the content of a post, rather than failing to process it.
+ **/
+private Boolean isRejected(Integer status) {
+    return status == 400 || status == 413 || status == 422
+}
+
+/**
+ *  nextRetryDelay()
+ *
+ *  Seconds to wait before retrying a failed post. The delay only grows when the spool is on: without it the
+ *  queue is trimmed by failed posts alone, so a longer delay would let the queue outgrow the backlog limit.
+ *  The wait is a time, not a flag, so it always ends without needing a success to clear it.
+ **/
+private Integer nextRetryDelay(hubResponse) {
+    if (!settings.prefSpoolEnabled) {
+        return RETRY_MIN_SECONDS
+    }
+
+    Integer delay = state.retryDelay ? Math.min(state.retryDelay * 2, RETRY_MAX_SECONDS) : RETRY_MIN_SECONDS
+    state.retryDelay = delay
+
+    String retryAfter = hubResponse.headers?.find { it.key?.equalsIgnoreCase("Retry-After") }?.value
+    if (retryAfter?.isInteger()) {
+        delay = Math.max(delay, Math.min(retryAfter.toInteger(), RETRY_AFTER_MAX_SECONDS))
+    }
+
+    state.retryUntil = now() + delay * 1000L
+    return delay
+}
+
+private void clearRetry() {
+    state.remove("retryDelay")
+    state.remove("retryUntil")
 }
 
 /**
@@ -1161,31 +1267,49 @@ void handleInfluxResponse(hubResponse, closure) {
 
     if (hubResponse.status < 400) {
         logger("Post of ${postCount} events complete - elapsed time ${elapsed} seconds - Status: ${hubResponse.status}", logInfo)
+        clearRetry()
+        state.remove("postLimit")
     }
     else {
-        logger("Post of ${postCount} events failed - elapsed time ${elapsed} seconds - Status: ${hubResponse.status}, Error: ${hubResponse.errorMessage}, Headers: ${hubResponse.headers}, Data: ${data}", logWarn)
+        logger("Post of ${postCount} events failed - elapsed time ${elapsed} seconds - Status: ${hubResponse.status}, Error: ${hubResponse.errorMessage}, Headers: ${hubResponse.headers}", logWarn)
         if (postCount == 1) {
             logger("Failed record was: ${state.loggerQueue[0]}", logError)
         }
 
         loggerQueueSize = state.loggerQueue.size()
-        if (loggerQueueSize <= settings.prefBacklogLimit) {
-            if (loggerQueueSize > postCount) {
-                logger("Backlog of ${loggerQueueSize} events", logWarn)
+        if (isRejected(hubResponse.status)) {
+            // The server refused the content, so retrying the same batch can never work.
+            // Halve the batch until the bad line is alone, then drop only that line.
+            if (postCount > 1) {
+                state.postLimit = Math.max(1, (int) (postCount / 2))
+                runIn(1, writeQueuedDataToInfluxDb)
+                if (prefQueueSizeVariable) {
+                    setGlobalVar(prefQueueSizeVariable, loggerQueueSize)
+                }
+                return
             }
-
-            // Try again later
-            runIn(60, writeQueuedDataToInfluxDb)
-
-            // Update queue size variable if in use
-            // NB: This is done after reschedule in case the variable update fails
-            if (prefQueueSizeVariable) {
-                setGlobalVar(prefQueueSizeVariable, loggerQueueSize)
-            }
-            return
+            logger("Dropping record rejected by InfluxDB: ${state.loggerQueue[0]}", logError)
+            state.eventsRejected = (state.eventsRejected ?: 0) + 1
         }
+        else {
+            if (loggerQueueSize <= settings.prefBacklogLimit) {
+                if (loggerQueueSize > postCount) {
+                    logger("Backlog of ${loggerQueueSize} events", logWarn)
+                }
 
-        logger("Backlog of ${loggerQueueSize} events exceeds limit of ${settings.prefBacklogLimit}: dropping ${postCount} events", logError)
+                // Try again later
+                runIn(nextRetryDelay(hubResponse), writeQueuedDataToInfluxDb)
+
+                // Update queue size variable if in use
+                // NB: This is done after reschedule in case the variable update fails
+                if (prefQueueSizeVariable) {
+                    setGlobalVar(prefQueueSizeVariable, loggerQueueSize)
+                }
+                return
+            }
+
+            logger("Backlog of ${loggerQueueSize} events exceeds limit of ${settings.prefBacklogLimit}: dropping ${postCount} events", logError)
+        }
     }
 
     // Remove the post from the queue
@@ -1197,10 +1321,320 @@ void handleInfluxResponse(hubResponse, closure) {
         runInMillis(50, writeQueuedDataToInfluxDb)
     }
 
+    // The server answered, so any spooled events can follow at their own pace
+    if (hubResponse.status < 400 && spoolPending()) {
+        runIn(SPOOL_REPLAY_SECONDS, replaySpool)
+    }
+
     // Update queue size variable if in use
     // NB: This is done after reschedule in case the variable update fails
     if (prefQueueSizeVariable) {
         setGlobalVar(prefQueueSizeVariable, loggerQueueSize)
+    }
+}
+
+/**
+ *  Spool
+ *
+ *  During an outage the oldest queued events move to File Manager as write-once segments, so state stays
+ *  small however long the outage lasts. Segments are numbered: spoolHead is the oldest not yet delivered,
+ *  spoolTail the next to write, spoolOffset the lines of the head segment already delivered.
+ *
+ *  Every step may repeat after a crash, and none may lose data. InfluxDB overwrites a point with the same
+ *  measurement, tags and timestamp, so delivering a line twice is harmless.
+ **/
+private Integer spoolThreshold() {
+    return settings.prefSpoolThreshold ?: SPOOL_THRESHOLD_DEFAULT
+}
+
+private Integer spoolSegmentLines() {
+    Integer lines = settings.prefSpoolSegmentLines ?: SPOOL_SEGMENT_DEFAULT
+    return Math.max(1, Math.min(lines, spoolThreshold() - 1))
+}
+
+private Long spoolMaxBytes() {
+    return (settings.prefSpoolMaxMB ?: SPOOL_MAX_MB_DEFAULT) * 1048576L
+}
+
+private Boolean spoolPending() {
+    return (state.spoolHead ?: 0) != (state.spoolTail ?: 0)
+}
+
+private String spoolPrefix() {
+    return "influx-spool-${app.id}-"
+}
+
+private String spoolFileName(Integer sequence) {
+    return "${spoolPrefix()}${sequence}.lp"
+}
+
+private String sha256(byte[] bytes) {
+    return MessageDigest.getInstance("SHA-256").digest(bytes).encodeHex().toString()
+}
+
+/**
+ *  readSegment()
+ *
+ *  Read and verify a segment. Returns its lines and size, or null if it is missing or damaged.
+ **/
+private Map readSegment(Integer sequence) {
+    byte[] bytes
+    try {
+        bytes = downloadHubFile(spoolFileName(sequence))
+    }
+    catch (e) {
+        return null // Thrown or null for a missing file, depending on firmware
+    }
+    if (bytes == null) {
+        return null
+    }
+
+    String text = new String(bytes, "UTF-8")
+    Integer eol = text.indexOf("\n")
+    if (eol < 0) {
+        return null
+    }
+    Map header = [:]
+    text.substring(0, eol).tokenize(" ").each { field ->
+        Integer eq = field.indexOf("=")
+        if (eq > 0) {
+            header[field.substring(0, eq)] = field.substring(eq + 1)
+        }
+    }
+    String body = text.substring(eol + 1)
+    if (header.sha256 != sha256(body.getBytes("UTF-8"))) {
+        return null
+    }
+    return [ lines: body.split("\n") as List, size: bytes.length ]
+}
+
+/**
+ *  spillToSpool()
+ *
+ *  Move the oldest queued events to a new segment. The events leave the queue only after the segment has
+ *  been read back and matches, so a failure at any point leaves them queued.
+ **/
+private void spillToSpool() {
+    Integer inFlight = state.postCount ?: 0
+    Integer lineCount = spoolSegmentLines()
+    List queue = state.loggerQueue
+    if (queue.size() < inFlight + lineCount) {
+        return
+    }
+
+    Integer sequence = state.spoolTail ?: 0
+    String body = queue.subList(inFlight, inFlight + lineCount).toArray().join('\n')
+    String signature = sha256(body.getBytes("UTF-8"))
+    byte[] fileBytes = "#influxspool v1 lines=${lineCount} sha256=${signature}\n${body}".getBytes("UTF-8")
+
+    try {
+        uploadHubFile(spoolFileName(sequence), fileBytes)
+    }
+    catch (e) {
+        logger("Spool write failed, keeping events queued: ${e}", logError)
+        state.spoolWriteFailures = (state.spoolWriteFailures ?: 0) + 1
+        return
+    }
+    if (readSegment(sequence)?.lines?.size() != lineCount) {
+        logger("Spool segment ${sequence} did not verify, keeping events queued", logError)
+        state.spoolWriteFailures = (state.spoolWriteFailures ?: 0) + 1
+        return
+    }
+
+    state.loggerQueue = queue.take(inFlight) + queue.drop(inFlight + lineCount)
+    state.spoolTail = sequence + 1
+    state.spoolBytes = (state.spoolBytes ?: 0) + fileBytes.length
+    logger("Spooled ${lineCount} events to segment ${sequence}", logInfo)
+
+    while (state.spoolBytes > spoolMaxBytes() && (state.spoolHead ?: 0) != sequence) {
+        dropOldestSegment()
+    }
+}
+
+/**
+ *  dropOldestSegment()
+ *
+ *  The spool is full: give up the oldest segment and count what was lost.
+ **/
+private void dropOldestSegment() {
+    Integer head = state.spoolHead ?: 0
+    Map segment = readSegment(head)
+    Integer lost = (segment?.lines?.size() ?: spoolSegmentLines()) - (state.spoolOffset ?: 0)
+    logger("Spool is full: dropping ${lost} oldest events", logError)
+    state.eventsDropped = (state.eventsDropped ?: 0) + lost
+    retireHead(segment?.size ?: 0)
+}
+
+/**
+ *  retireHead()
+ *
+ *  Delete the head segment and move on to the next one.
+ **/
+private void retireHead(Integer size) {
+    deleteHubFile(spoolFileName(state.spoolHead ?: 0))
+    state.spoolHead = (state.spoolHead ?: 0) + 1
+    state.spoolOffset = 0
+    state.spoolBytes = Math.max(0, (state.spoolBytes ?: 0) - size)
+    state.remove("replayLimit")
+}
+
+/**
+ *  replaySpool()
+ *
+ *  Post the next lines of the head segment. Live events go first, and replay runs at a fixed pace, so
+ *  several loggers recovering together stay inside the server's write limits.
+ **/
+void replaySpool() {
+    if (!spoolPending()) {
+        return
+    }
+
+    Long timeNow = now()
+    if (state.postCount || (state.replayPost && timeNow - state.replayPost < 90000)) {
+        runIn(SPOOL_REPLAY_SECONDS, replaySpool)
+        return
+    }
+    if (state.retryUntil && timeNow + 1000 < state.retryUntil) {
+        runIn(Math.ceil((state.retryUntil - timeNow) / 1000).intValue(), replaySpool)
+        return
+    }
+
+    Integer head = state.spoolHead ?: 0
+    Map segment = readSegment(head)
+    if (segment == null) {
+        logger("Spool segment ${head} is missing or damaged: skipping it", logError)
+        state.spoolBadSegments = (state.spoolBadSegments ?: 0) + 1
+        state.spoolHead = head + 1
+        state.spoolOffset = 0
+        state.remove("replayLimit")
+        runIn(1, replaySpool)
+        return
+    }
+
+    Integer offset = state.spoolOffset ?: 0
+    Integer limit = state.replayLimit ?: settings.prefBatchSizeLimit
+    List lines = segment.lines.subList(offset, Math.min(offset + limit, segment.lines.size()))
+    state.replayPost = timeNow
+    asynchttpPost('handleReplayResponse', postParameters(lines.toArray().join('\n')),
+        [ sequence: head, offset: offset, lineCount: lines.size(), segmentLines: segment.lines.size(), segmentSize: segment.size ])
+}
+
+/**
+ *  handleReplayResponse()
+ *
+ *  Handles response from post made in replaySpool().
+ **/
+void handleReplayResponse(hubResponse, closure) {
+    state.remove("replayPost")
+
+    // The spool may have moved on while this post was running
+    if (closure.sequence != (state.spoolHead ?: 0) || closure.offset != (state.spoolOffset ?: 0)) {
+        runIn(SPOOL_REPLAY_SECONDS, replaySpool)
+        return
+    }
+
+    Integer status = hubResponse.status
+    if (status >= 400 && !isRejected(status)) {
+        logger("Replay of ${closure.lineCount} spooled events failed - Status: ${status}, Error: ${hubResponse.errorMessage}", logWarn)
+        runIn(nextRetryDelay(hubResponse), replaySpool)
+        return
+    }
+
+    if (isRejected(status) && closure.lineCount > 1) {
+        state.replayLimit = Math.max(1, (int) (closure.lineCount / 2))
+        runIn(1, replaySpool)
+        return
+    }
+
+    if (isRejected(status)) {
+        logger("Dropping spooled record rejected by InfluxDB", logError)
+        state.eventsRejected = (state.eventsRejected ?: 0) + 1
+    }
+    else {
+        clearRetry()
+        state.remove("replayLimit")
+    }
+
+    Integer delivered = closure.offset + closure.lineCount
+    if (delivered >= closure.segmentLines) {
+        retireHead(closure.segmentSize)
+        logger("Spool segment ${closure.sequence} delivered", logInfo)
+    }
+    else {
+        state.spoolOffset = delivered
+    }
+
+    if (spoolPending()) {
+        runIn(SPOOL_REPLAY_SECONDS, replaySpool)
+    }
+}
+
+/**
+ *  reconcileSpool()
+ *
+ *  Make the state agree with the files present, which is what survives a crash or a restored backup.
+ *  Listing files is slow, so this runs at startup and on save, never on the event path.
+ **/
+private void reconcileSpool() {
+    Integer head = state.spoolHead ?: 0
+    Integer tail = state.spoolTail ?: 0
+    String prefix = spoolPrefix()
+
+    Map<Integer,Long> found = [:]
+    getHubFiles().each { file ->
+        if (file.name.startsWith(prefix) && file.name.endsWith(".lp")) {
+            String sequence = file.name.substring(prefix.length(), file.name.length() - 3)
+            if (sequence.isInteger()) {
+                found[sequence.toInteger()] = file.size.toLong()
+            }
+        }
+    }
+
+    if (found) {
+        if (head == tail && found.keySet().max() < head) {
+            found = [:] // Only damaged segments kept for inspection
+        }
+        else {
+            if (head == 0 && tail == 0) {
+                head = found.keySet().min() // State was lost: everything on disk is undelivered
+            }
+            tail = Math.max(tail, found.keySet().max() + 1)
+        }
+    }
+
+    // Files below the head are damaged segments, kept for inspection
+    state.spoolHead = head
+    state.spoolTail = tail
+    state.spoolBytes = found.findAll { it.key >= head }.values().sum() ?: 0
+    logger("Spool holds segments ${head} to ${tail - 1}", logDebug)
+}
+
+/**
+ *  deleteSpool()
+ *
+ *  Remove every file belonging to this instance.
+ **/
+private void deleteSpool() {
+    String prefix = spoolPrefix()
+    getHubFiles().findAll { it.name.startsWith(prefix) }.each { deleteHubFile(it.name) }
+}
+
+/**
+ *  spoolWatchdog()
+ *
+ *  A scheduling chain can break, for instance across a reboot. Nothing depends on that here: this restarts
+ *  whichever side has work waiting.
+ **/
+void spoolWatchdog() {
+    Long timeNow = now()
+    if (state.replayPost && timeNow - state.replayPost >= 90000) {
+        state.remove("replayPost")
+    }
+    if (state.loggerQueue.size() && (!state.lastPost || timeNow - state.lastPost >= RETRY_MAX_SECONDS * 1000)) {
+        writeQueuedDataToInfluxDb()
+    }
+    if (spoolPending()) {
+        replaySpool()
     }
 }
 
