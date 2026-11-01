@@ -1236,7 +1236,7 @@ private Integer nextRetryDelay(hubResponse) {
     Integer delay = state.retryDelay ? Math.min(state.retryDelay * 2, RETRY_MAX_SECONDS) : RETRY_MIN_SECONDS
     state.retryDelay = delay
 
-    String retryAfter = hubResponse.headers?.find { it.key?.equalsIgnoreCase("Retry-After") }?.value
+    String retryAfter = hubResponse.headers?.get("Retry-After")?.value
     if (retryAfter?.isInteger()) {
         delay = Math.max(delay, Math.min(retryAfter.toInteger(), RETRY_AFTER_MAX_SECONDS))
     }
