@@ -88,6 +88,8 @@
  *   2025-04-30 Denny Page      Clarify InfluxDB Version as referring to Write Protocol Version
  *   2025-08-30 Denny Page      Address softpoll issue with boolean system variables
  *   2025-12-21 Denny Page      Lower default values
+ *   2026-03-17 Denny Page      Add InfluxDB V3 support (Thanks to mavrrick58)
+ *   2026-04-03 Denny Page      Add Integrations menu support
  *****************************************************************************************************************/
 
 definition(
@@ -100,6 +102,7 @@ definition(
     iconUrl: "",
     iconX2Url: "",
     iconX3Url: "",
+    menu: "Integrations",
     singleThreaded: true
 )
 
@@ -398,7 +401,8 @@ def connectionPage() {
                 type: "enum",
                 options: [
                     "1" : "v1",
-                    "2" : "v2/v3"
+                    "2" : "v2",
+                    "3" : "v3"
                 ],
                 required: true,
                 submitOnChange: true
@@ -429,6 +433,16 @@ def connectionPage() {
                     required: true
                 )
                 paragraph "Do not use special characters (including spaces) in Org or Bucket Names"
+            }
+            else if (prefInfluxVer == "3") {
+                input(
+                    "prefDatabaseName",
+                    "text",
+                    title: "Database Name",
+                    defaultValue: "Hubitat",
+                    required: true
+                )
+                paragraph "Do not use special characters (including spaces) in Database Names"
             }
             input(
                 name: "prefAuthType",
@@ -1239,7 +1253,10 @@ private String uriString() {
         uri += ":" + settings.prefDatabasePort
     }
 
-    if (settings?.prefInfluxVer == "2") {
+    if (settings?.prefInfluxVer == "3") {
+        uri += "/api/v3/write_lp?db=${settings.prefDatabaseName}"
+    }
+    else if (settings?.prefInfluxVer == "2") {
         uri += "/api/v2/write?org=${settings.prefOrg}&bucket=${settings.prefBucket}"
     }
     else {
