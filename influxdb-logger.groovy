@@ -183,6 +183,9 @@ import java.security.MessageDigest
 @Field static final Integer SPOOL_THRESHOLD_DEFAULT = 300
 @Field static final Integer SPOOL_SEGMENT_DEFAULT = 250
 @Field static final Integer SPOOL_MAX_MB_DEFAULT = 64
+@Field static final Integer CONTROL_AUTO_RESUME_HOURS = 24
+@Field static final Long STATUS_INTERVAL_MS = 300000L
+@Field static final String CONTROL_DRIVER = "InfluxDB Logger Control"
 
 preferences {
     page(name: "setupMain")
@@ -325,7 +328,34 @@ def setupMain() {
                     defaultValue: SPOOL_MAX_MB_DEFAULT,
                     range: "1..256"
                 )
+                if (state.spoolTail != null) {
+                    paragraph "Spool: ${spooledEvents()} events waiting, ${state.eventsDropped ?: 0} dropped, ${state.eventsRejected ?: 0} rejected, ${state.spoolBadSegments ?: 0} files skipped"
+                }
             }
+        }
+
+        section("\n<h3>Logging Controls:</h3>", hideable: true, hidden: true) {
+            input(
+                "prefControlDevice",
+                "bool",
+                title: "Create a control device with hold and stop commands and status (needs the ${CONTROL_DRIVER} driver)",
+                defaultValue: false
+            )
+            input(
+                "prefControlAutoResumeHours",
+                "number",
+                title: "End a hold or stop made from the control device after this many hours (0 for never)",
+                defaultValue: CONTROL_AUTO_RESUME_HOURS,
+                range: "0..720"
+            )
+            if (prefSpoolEnabled) {
+                paragraph "Hold posting: events are kept on disk and delivered when it ends"
+                input("holdWhenOn", "capability.switch", title: "Hold posting while any of these is on", multiple: true, required: false)
+                input("holdWhenOff", "capability.switch", title: "Hold posting while any of these is off", multiple: true, required: false)
+            }
+            paragraph "Stop capture: new events are dropped"
+            input("stopCaptureWhenOn", "capability.switch", title: "Stop capture while any of these is on", multiple: true, required: false)
+            input("stopCaptureWhenOff", "capability.switch", title: "Stop capture while any of these is off", multiple: true, required: false)
         }
 
         section("Devices To Monitor:", hideable:true, hidden:false) {
@@ -626,7 +656,14 @@ void updated() {
 
     // Find any spooled events, and keep watch while there may be some
     reconcileSpool()
-    if (settings.prefSpoolEnabled || spoolPending()) {
+    syncControlDevice()
+    ["holdWhenOn", "holdWhenOff", "stopCaptureWhenOn", "stopCaptureWhenOff"].each { name ->
+        if (settings[name]) {
+            subscribe(settings[name], "switch", controlSwitchHandler)
+        }
+    }
+    refreshControls()
+    if (settings.prefSpoolEnabled || spoolPending() || controlsInUse()) {
         runEvery5Minutes(spoolWatchdog)
     }
 
@@ -676,6 +713,7 @@ void hubRestartHandler(evt) {
     }
 
     reconcileSpool()
+    refreshControls()
 
     if (state.loggerQueue.size()) {
         runIn(60, writeQueuedDataToInfluxDb)
@@ -1004,6 +1042,10 @@ private String encodeHubInfo(evt) {
  *  Handle variable events
  **/
 void handleVariableEvent(evt) {
+    if (state.captureStopped) {
+        return
+    }
+
     logger("Handle Variable Event: ${evt.name}, ${evt.value}", logDebug)
 
     // Encode the event
@@ -1019,6 +1061,10 @@ void handleVariableEvent(evt) {
  *  Handle device events
 **/
 void handleEvent(evt) {
+    if (state.captureStopped) {
+        return
+    }
+
     logger("Handle Event: ${evt.displayName}, ${evt.name}, ${evt.unit}, ${evt.value}", logDebug)
 
     // Encode the event
@@ -1034,6 +1080,10 @@ void handleEvent(evt) {
  *  Log hub information when mode changes.
  **/
 void handleModeEvent(evt) {
+    if (state.captureStopped) {
+        return
+    }
+
     logger("Handle Mode Event: ${evt}", logDebug)
 
     // Encode the event
@@ -1052,6 +1102,10 @@ void handleModeEvent(evt) {
  *  NB: Function name softPoll must be kept for backward compatibility
  **/
 void softPoll() {
+    if (state.captureStopped) {
+        return
+    }
+
     logger("Keepalive check", logDebug)
 
     // Create the list
@@ -1150,7 +1204,7 @@ private void queueToInfluxDb(List<String> eventList) {
 void writeQueuedDataToInfluxDb() {
     Integer loggerQueueSize = state.loggerQueue.size()
     logger("Number of events queued for InfluxDB: ${loggerQueueSize}", logDebug)
-    if (loggerQueueSize == 0) {
+    if (loggerQueueSize == 0 || state.postingHeld) {
         return
     }
 
@@ -1173,7 +1227,9 @@ void writeQueuedDataToInfluxDb() {
         if (loggerQueueSize > settings.prefBacklogLimit) {
             logger("Backlog of ${state.loggerQueue.size()} events exceeds limit of ${settings.prefBacklogLimit}: dropping ${postCount} events (failsafe)", logError)
             state.loggerQueue = state.loggerQueue.drop(postCount)
-            loggerQueueSize -= postCount
+            state.eventsDropped = (state.eventsDropped ?: 0) + postCount
+            queueGapRecord("backlogLimit", postCount)
+            loggerQueueSize = state.loggerQueue.size()
         }
     }
 
@@ -1269,6 +1325,7 @@ void handleInfluxResponse(hubResponse, closure) {
         logger("Post of ${postCount} events complete - elapsed time ${elapsed} seconds - Status: ${hubResponse.status}", logInfo)
         clearRetry()
         state.remove("postLimit")
+        state.lastSuccess = now()
     }
     else {
         logger("Post of ${postCount} events failed - elapsed time ${elapsed} seconds - Status: ${hubResponse.status}, Error: ${hubResponse.errorMessage}, Headers: ${hubResponse.headers}", logWarn)
@@ -1299,6 +1356,7 @@ void handleInfluxResponse(hubResponse, closure) {
 
                 // Try again later
                 runIn(nextRetryDelay(hubResponse), writeQueuedDataToInfluxDb)
+                publishStatus()
 
                 // Update queue size variable if in use
                 // NB: This is done after reschedule in case the variable update fails
@@ -1309,6 +1367,8 @@ void handleInfluxResponse(hubResponse, closure) {
             }
 
             logger("Backlog of ${loggerQueueSize} events exceeds limit of ${settings.prefBacklogLimit}: dropping ${postCount} events", logError)
+            state.eventsDropped = (state.eventsDropped ?: 0) + postCount
+            queueGapRecord("backlogLimit", postCount)
         }
     }
 
@@ -1325,6 +1385,7 @@ void handleInfluxResponse(hubResponse, closure) {
     if (hubResponse.status < 400 && spoolPending()) {
         runIn(SPOOL_REPLAY_SECONDS, replaySpool)
     }
+    publishStatus()
 
     // Update queue size variable if in use
     // NB: This is done after reschedule in case the variable update fails
@@ -1462,6 +1523,7 @@ private void dropOldestSegment() {
     Integer lost = (segment?.lines?.size() ?: spoolSegmentLines()) - (state.spoolOffset ?: 0)
     logger("Spool is full: dropping ${lost} oldest events", logError)
     state.eventsDropped = (state.eventsDropped ?: 0) + lost
+    queueGapRecord("spoolFull", lost)
     retireHead(segment?.size ?: 0)
 }
 
@@ -1485,7 +1547,7 @@ private void retireHead(Integer size) {
  *  several loggers recovering together stay inside the server's write limits.
  **/
 void replaySpool() {
-    if (!spoolPending()) {
+    if (!spoolPending() || state.postingHeld) {
         return
     }
 
@@ -1504,6 +1566,7 @@ void replaySpool() {
     if (segment == null) {
         logger("Spool segment ${head} is missing or damaged: skipping it", logError)
         state.spoolBadSegments = (state.spoolBadSegments ?: 0) + 1
+        queueGapRecord("damagedSegment", 0)
         state.spoolHead = head + 1
         state.spoolOffset = 0
         state.remove("replayLimit")
@@ -1635,6 +1698,218 @@ void spoolWatchdog() {
     }
     if (spoolPending()) {
         replaySpool()
+    }
+
+    if (state.holdManualUntil && timeNow >= state.holdManualUntil) {
+        logger("Hold on posting has run for its time limit: resuming", logWarn)
+        controlCommand("resumePosting")
+    }
+    if (state.stopManualUntil && timeNow >= state.stopManualUntil) {
+        logger("Capture has been stopped for its time limit: resuming", logWarn)
+        controlCommand("resumeCapture")
+    }
+    publishStatus(timeNow - (state.lastStatusTime ?: 0) >= STATUS_INTERVAL_MS)
+}
+
+/**
+ *  queueGapRecord()
+ *
+ *  Record in InfluxDB why data is missing, so a hole can be told from a quiet sensor.
+ **/
+private void queueGapRecord(String reason, Integer events) {
+    String hubName = escapeStringForInfluxDB(location.name)
+    String appName = escapeStringForInfluxDB(app.label)
+    long timestamp = now() * 1000000L
+    state.loggerQueue = state.loggerQueue + ["_loggerGap,hubName=${hubName},appName=${appName},reason=${reason} events=${events}i ${timestamp}".toString()]
+}
+
+/**
+ *  Controls
+ *
+ *  Two independent controls. Hold keeps capturing and stops posting, so events spool and nothing is lost up
+ *  to the spool's size limit. It needs the spool: failed posts are what trim the queue without one. Stop
+ *  capture drops new events and leaves whatever is already queued or spooled to drain.
+ *
+ *  A control is on while any source asks for it: the child device or the switch lists.
+ **/
+private Boolean anySwitch(List devices, String value) {
+    return devices ? devices.any { it.currentValue("switch", true) == value } : false
+}
+
+private Boolean controlsInUse() {
+    return settings.prefControlDevice || holdWhenOn || holdWhenOff || stopCaptureWhenOn || stopCaptureWhenOff
+}
+
+private void refreshControls() {
+    Boolean held = settings.prefSpoolEnabled && (state.holdManual || anySwitch(holdWhenOn, "on") || anySwitch(holdWhenOff, "off"))
+    Boolean stopped = state.stopManual || anySwitch(stopCaptureWhenOn, "on") || anySwitch(stopCaptureWhenOff, "off")
+    Boolean wasHeld = state.postingHeld ?: false
+    Boolean wasStopped = state.captureStopped ?: false
+
+    state.postingHeld = held
+    state.captureStopped = stopped
+
+    if (stopped != wasStopped) {
+        logger(stopped ? "Capture stopped: new events are dropped" : "Capture resumed", logWarn)
+        queueGapRecord(stopped ? "captureStopped" : "captureResumed", 0)
+    }
+    if (held != wasHeld) {
+        logger(held ? "Posting held: events are kept until it resumes" : "Posting resumed", logWarn)
+    }
+    if ((wasHeld && !held) || (stopped != wasStopped && !held)) {
+        runIn(1, writeQueuedDataToInfluxDb)
+    }
+    if (wasHeld && !held && spoolPending()) {
+        runIn(SPOOL_REPLAY_SECONDS, replaySpool)
+    }
+    publishStatus(true)
+}
+
+/**
+ *  controlSwitchHandler()
+ *
+ *  A switch in one of the control lists changed.
+ **/
+void controlSwitchHandler(evt) {
+    refreshControls()
+}
+
+/**
+ *  controlCommand()
+ *
+ *  Called by the child device.
+ **/
+void controlCommand(String command) {
+    Long until = null
+    Integer hours = settings.prefControlAutoResumeHours != null ? settings.prefControlAutoResumeHours : CONTROL_AUTO_RESUME_HOURS
+    if (hours > 0) {
+        until = now() + hours * 3600000L
+    }
+
+    switch (command) {
+        case "holdPosting":
+            if (!settings.prefSpoolEnabled) {
+                logger("Hold needs the spool to be on: ignoring it", logWarn)
+                break
+            }
+            state.holdManual = true
+            state.holdManualUntil = until
+            break
+        case "resumePosting":
+            state.remove("holdManual")
+            state.remove("holdManualUntil")
+            break
+        case "stopCapture":
+            state.stopManual = true
+            state.stopManualUntil = until
+            break
+        case "resumeCapture":
+            state.remove("stopManual")
+            state.remove("stopManualUntil")
+            break
+        case "flushNow":
+            clearRetry()
+            if (!state.postingHeld) {
+                runIn(1, writeQueuedDataToInfluxDb)
+                if (spoolPending()) {
+                    runIn(SPOOL_REPLAY_SECONDS, replaySpool)
+                }
+            }
+            break
+        default:
+            logger("Unknown control command: ${command}", logWarn)
+            break
+    }
+    refreshControls()
+}
+
+private String controlDni() {
+    return "influxdb-logger-control-${app.id}"
+}
+
+private void syncControlDevice() {
+    def child = getChildDevice(controlDni())
+    if (settings.prefControlDevice && !child) {
+        try {
+            addChildDevice("nowhereville", CONTROL_DRIVER, controlDni(), [name: CONTROL_DRIVER, label: "${app.label} Control", isComponent: false])
+        }
+        catch (e) {
+            logger("Could not create the control device, is the \"${CONTROL_DRIVER}\" driver installed? ${e}", logError)
+        }
+    }
+    else if (!settings.prefControlDevice && child) {
+        deleteChildDevice(controlDni())
+    }
+}
+
+private String postingStatus() {
+    if (state.postingHeld) {
+        return "held"
+    }
+    if (state.retryUntil) {
+        return "outage"
+    }
+    return spoolPending() ? "replaying" : "active"
+}
+
+private Integer spooledEvents() {
+    if (!spoolPending()) {
+        return 0
+    }
+    Integer segments = (state.spoolTail ?: 0) - (state.spoolHead ?: 0)
+    return segments * spoolSegmentLines() - (state.spoolOffset ?: 0)
+}
+
+/**
+ *  oldestEventAge()
+ *
+ *  Minutes since the oldest event still to be delivered.
+ **/
+private Integer oldestEventAge() {
+    List lines = spoolPending() ? readSegment(state.spoolHead ?: 0)?.lines : null
+    String oldest = lines ? lines[0] : (state.loggerQueue ? state.loggerQueue[0] : null)
+    if (!oldest) {
+        return 0
+    }
+    long oldestMs = oldest.tokenize(" ")[-1].toLong() / 1000000L
+    long ageMs = now() - oldestMs
+    return ageMs > 0 ? (int) (ageMs / 60000L) : 0
+}
+
+/**
+ *  publishStatus()
+ *
+ *  Tell the child device. A status change goes at once, the counts at most every few minutes.
+ **/
+private void publishStatus(Boolean force = false) {
+    if (!settings.prefControlDevice) {
+        return
+    }
+    String posting = postingStatus()
+    String capture = state.captureStopped ? "stopped" : "active"
+    String key = "${posting}/${capture}"
+    if (!force && key == state.lastStatus) {
+        return
+    }
+
+    // Reporting must never undo the work it reports on: a throw here would roll back the caller's state
+    try {
+        def child = getChildDevice(controlDni())
+        if (child) {
+            state.lastStatus = key
+            state.lastStatusTime = now()
+            child.setStatus([
+                posting: posting,
+                capture: capture,
+                spooledEvents: spooledEvents(),
+                oldestEventAge: oldestEventAge(),
+                droppedEvents: state.eventsDropped ?: 0,
+                lastSuccess: state.lastSuccess ? new Date(state.lastSuccess).format("yyyy-MM-dd HH:mm:ss", location.timeZone) : "never"
+            ])
+        }
+    }
+    catch (e) {
+        logger("Could not update the control device: ${e}", logWarn)
     }
 }
 
