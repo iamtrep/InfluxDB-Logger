@@ -98,7 +98,7 @@ definition(
     author: "Hubitat Community",
     description: "Log device states to InfluxDB",
     category: "Utility",
-    importUrl: "https://raw.githubusercontent.com/HubitatCommunity/InfluxDB-Logger/master/influxdb-logger.groovy",
+    importUrl: "https://raw.githubusercontent.com/iamtrep/InfluxDB-Logger/spool/influxdb-logger.groovy",
     iconUrl: "",
     iconX2Url: "",
     iconX3Url: "",
