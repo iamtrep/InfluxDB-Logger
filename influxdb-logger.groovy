@@ -185,6 +185,7 @@ import java.security.MessageDigest
 @Field static final Integer SPOOL_MAX_MB_DEFAULT = 64
 @Field static final Integer CONTROL_AUTO_RESUME_HOURS = 24
 @Field static final Long STATUS_INTERVAL_MS = 300000L
+@Field static final Long STATUS_SLACK_MS = 30000L
 @Field static final String CONTROL_DRIVER = "InfluxDB Logger Control"
 
 preferences {
@@ -1502,13 +1503,21 @@ private void spillToSpool() {
         return
     }
 
+    Boolean firstSegment = !spoolPending()
+    Integer lines = spoolLines() + lineCount
     state.loggerQueue = queue.take(inFlight) + queue.drop(inFlight + lineCount)
     state.spoolTail = sequence + 1
     state.spoolBytes = (state.spoolBytes ?: 0) + fileBytes.length
+    state.spoolLines = lines
     logger("Spooled ${lineCount} events to segment ${sequence}", logInfo)
 
     while (state.spoolBytes > spoolMaxBytes() && (state.spoolHead ?: 0) != sequence) {
         dropOldestSegment()
+    }
+
+    // The spool starting is worth telling at once; later segments wait for the regular status
+    if (firstSegment) {
+        publishStatus(true)
     }
 }
 
@@ -1520,11 +1529,12 @@ private void spillToSpool() {
 private void dropOldestSegment() {
     Integer head = state.spoolHead ?: 0
     Map segment = readSegment(head)
-    Integer lost = (segment?.lines?.size() ?: spoolSegmentLines()) - (state.spoolOffset ?: 0)
+    Integer lines = segment?.lines?.size() ?: spoolSegmentLines()
+    Integer lost = lines - (state.spoolOffset ?: 0)
     logger("Spool is full: dropping ${lost} oldest events", logError)
     state.eventsDropped = (state.eventsDropped ?: 0) + lost
     queueGapRecord("spoolFull", lost)
-    retireHead(segment?.size ?: 0)
+    retireHead(segment?.size ?: 0, lines)
 }
 
 /**
@@ -1532,12 +1542,30 @@ private void dropOldestSegment() {
  *
  *  Delete the head segment and move on to the next one.
  **/
-private void retireHead(Integer size) {
+private void retireHead(Integer size, Integer lines) {
+    Integer remaining = Math.max(0, spoolLines() - lines)
     deleteHubFile(spoolFileName(state.spoolHead ?: 0))
     state.spoolHead = (state.spoolHead ?: 0) + 1
     state.spoolOffset = 0
     state.spoolBytes = Math.max(0, (state.spoolBytes ?: 0) - size)
+    state.spoolLines = spoolPending() ? remaining : 0
     state.remove("replayLimit")
+}
+
+/**
+ *  spoolLines()
+ *
+ *  Lines in the segments not yet retired, kept as a running total because segments can differ in size when
+ *  the setting changes. A spool without a total, from an older version or after lost state, is estimated.
+ **/
+private Integer spoolLines() {
+    if (!spoolPending()) {
+        return 0
+    }
+    if (state.spoolLines == null) {
+        state.spoolLines = ((state.spoolTail ?: 0) - (state.spoolHead ?: 0)) * spoolSegmentLines()
+    }
+    return state.spoolLines
 }
 
 /**
@@ -1567,10 +1595,17 @@ void replaySpool() {
         logger("Spool segment ${head} is missing or damaged: skipping it", logError)
         state.spoolBadSegments = (state.spoolBadSegments ?: 0) + 1
         queueGapRecord("damagedSegment", 0)
+        Integer remaining = Math.max(0, spoolLines() - spoolSegmentLines()) // Its own count can't be read
         state.spoolHead = head + 1
         state.spoolOffset = 0
+        state.spoolLines = spoolPending() ? remaining : 0
         state.remove("replayLimit")
-        runIn(1, replaySpool)
+        if (spoolPending()) {
+            runIn(1, replaySpool)
+        }
+        else {
+            publishStatus(true)
+        }
         return
     }
 
@@ -1620,7 +1655,7 @@ void handleReplayResponse(hubResponse, closure) {
 
     Integer delivered = closure.offset + closure.lineCount
     if (delivered >= closure.segmentLines) {
-        retireHead(closure.segmentSize)
+        retireHead(closure.segmentSize, closure.segmentLines)
         logger("Spool segment ${closure.sequence} delivered", logInfo)
     }
     else {
@@ -1629,6 +1664,10 @@ void handleReplayResponse(hubResponse, closure) {
 
     if (spoolPending()) {
         runIn(SPOOL_REPLAY_SECONDS, replaySpool)
+    }
+    else {
+        // The spool is empty: say so now rather than at the next post or status interval
+        publishStatus(true)
     }
 }
 
@@ -1663,6 +1702,14 @@ private void reconcileSpool() {
             }
             tail = Math.max(tail, found.keySet().max() + 1)
         }
+    }
+
+    // A total that no longer matches the segments is estimated again
+    if (head == tail) {
+        state.spoolLines = 0
+    }
+    else if (head != (state.spoolHead ?: 0) || tail != (state.spoolTail ?: 0)) {
+        state.remove("spoolLines")
     }
 
     // Files below the head are damaged segments, kept for inspection
@@ -1708,7 +1755,8 @@ void spoolWatchdog() {
         logger("Capture has been stopped for its time limit: resuming", logWarn)
         controlCommand("resumeCapture")
     }
-    publishStatus(timeNow - (state.lastStatusTime ?: 0) >= STATUS_INTERVAL_MS)
+    // The watchdog runs every 5 minutes too, so a strict test would skip every other run
+    publishStatus(timeNow - (state.lastStatusTime ?: 0) >= STATUS_INTERVAL_MS - STATUS_SLACK_MS)
 }
 
 /**
@@ -1852,12 +1900,18 @@ private String postingStatus() {
     return spoolPending() ? "replaying" : "active"
 }
 
+/**
+ *  spooledEvents()
+ *
+ *  Events waiting: those on disk, plus the queue while nothing is being posted. In normal running the
+ *  queue is a batch on its way, and counting it would only make the attribute churn.
+ **/
 private Integer spooledEvents() {
-    if (!spoolPending()) {
-        return 0
+    Integer waiting = Math.max(0, spoolLines() - (state.spoolOffset ?: 0))
+    if (postingStatus() in ["held", "outage"]) {
+        waiting += state.loggerQueue?.size() ?: 0
     }
-    Integer segments = (state.spoolTail ?: 0) - (state.spoolHead ?: 0)
-    return segments * spoolSegmentLines() - (state.spoolOffset ?: 0)
+    return waiting
 }
 
 /**
@@ -1867,7 +1921,8 @@ private Integer spooledEvents() {
  **/
 private Integer oldestEventAge() {
     List lines = spoolPending() ? readSegment(state.spoolHead ?: 0)?.lines : null
-    String oldest = lines ? lines[0] : (state.loggerQueue ? state.loggerQueue[0] : null)
+    Integer offset = state.spoolOffset ?: 0
+    String oldest = lines && offset < lines.size() ? lines[offset] : (state.loggerQueue ? state.loggerQueue[0] : null)
     if (!oldest) {
         return 0
     }
